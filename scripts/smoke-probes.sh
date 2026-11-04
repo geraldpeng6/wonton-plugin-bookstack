@@ -9,8 +9,8 @@ web_assert() { grep -qi 'bookstack'; }   # stdin：OIDC 走完后落到应用真
 # 然后打开设置的用户列表（管理员页），断言里面有主人的账号。
 identity_check() {
   local page users_page
-  page="$(curl -sS --noproxy '*' -o /dev/null -L -b "$E2E_JAR" -c "$E2E_JAR" -H 'Accept: text/html' "$E2E_WEB_URL/")" ||
+  page="$(curl -sS --noproxy '*' -o /dev/null -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Accept: text/html' "$SMOKE_WEB_URL/")" ||
     { echo "OIDC 自动登录链失败"; return 1; }
   users_page="$(web_get /settings/users)" || { echo "GET /settings/users 失败：$users_page"; return 1; }
-  grep -qF "$E2E_OWNER" <<<"$users_page" || { echo "用户列表里没有主人 $E2E_OWNER"; return 1; }
+  grep -qF "$SMOKE_OWNER" <<<"$users_page" || { echo "用户列表里没有主人 $SMOKE_OWNER"; return 1; }
 }
