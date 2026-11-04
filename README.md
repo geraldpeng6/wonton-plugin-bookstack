@@ -1,11 +1,14 @@
-# 云吞插件模板
+# 云吞插件：BookStack
 
-云吞（Wonton）的插件就是一个 `docker-compose.yml`，顶层多一个 `x-wonton` 字段，写明插件在云吞里的身份、网页入口和要的
-权限。一个插件一个 Git 仓库，仓库根目录就是插件包，发布就是打 tag。主人在 App 里装上插件，核心按清单起容器、接好登录，
-插件的网页在 App 里作为小程序打开。
+BookStack（[bookstackapp.com](https://www.bookstackapp.com)，MIT）是自托管的 Wiki 和文档库：内容组织成书、章节和页面，所见即所得编辑，图片附件直接进页面，全文搜索。这个插件把它装进云吞：网页经核心网关打开，登录走核心的身份提供方，打开就是用户自己的管理员账号，不用再登录一次。
 
-这个仓库是模板：一个能装上的示例插件（nginx 显示一个向主人问好的网页），加上检查、开发环境和发布三个脚本。从这个模板
-新建仓库，照着下面把示例换成你的应用。
+插件用上游文档指向的 `lscr.io/linuxserver/bookstack` 镜像（BookStack 项目自己不发镜像）和 MariaDB 官方镜像做数据库，都按摘要固定。数据在插件自己的数据目录和命名卷里。
+
+## 图标来源与许可
+
+`icon.png` 取自 BookStack 官方仓库的 public/icon.png（固定到提交 5f306a11e73a），透明底按插件规范放到白色底上，未用图片模型生成；来源、版权、处理方式、上游 MIT 全文和商标说明见 [NOTICE](NOTICE)。
+
+BookStack® 是 Daniel Brown 的注册商标，仅用于识别本插件所集成的应用；本插件不代表 BookStack 官方，也不表示获得 BookStack 的合作、认可或背书。
 
 ## 准备
 
@@ -27,25 +30,22 @@ scripts/dev.sh up
 scripts/dev.sh install
 ```
 
-`up` 在本机起一套云吞，打印它的地址。示例（实例名取自目录名加 4 位随机数，端口随机）是
-`http://template3f2a.wonton.localhost:21234/`。浏览器打开，用 `scripts/dev.sh token` 输出的主人令牌登录。`install` 先列出
-插件要的权限，确认后装上，打印插件网页的地址。
-
-示例网页经 `sso: proxy` 拿到用户名，打开就是“你好，<用户名>”。换成真实应用时，把示例的 `description`、`about`、`tags`
-换成你的，`web/`、compose 里的两个 `configs` 和 `sso: proxy` 及其 `proxy` 删掉（默认让应用自己登录），`webui.service`、
-`port` 换成你的，按下面的规则重写。Chrome、Firefox 和 curl 把 `*.localhost` 直接解析到本机，不用改 hosts。
+`up` 在本机起一套云吞，打印它的地址（实例名取自目录名加 4 位随机数，如
+`http://bookstack3f2a.wonton.localhost:21234/`）。浏览器打开，用 `scripts/dev.sh token` 输出的用户令牌登录。`install` 确认后装上，
+打印插件网页的地址；打开插件网页即以用户身份进入 BookStack，不用再登录。Chrome、Firefox 和 curl 把 `*.localhost`
+直接解析到本机，不用改 hosts。
 
 ## 仓库里有什么
 
 | 路径 | 内容 |
 | --- | --- |
 | `docker-compose.yml` | 插件本身：compose 加上 `x-wonton` 清单 |
-| `icon.svg`、`web/` | 清单和 compose 引用的文件：图标、交给容器的配置和网页 |
+| `icon.png` | 清单引用的图标：上游官方标志，见 NOTICE |
 | `screenshots/` | 商店详情页里的截图 |
 | `scripts/check.sh` | 检查插件包，规则和安装时一样 |
 | `scripts/dev.sh` | 开发环境：起一套云吞，装、重装、卸载插件，看日志 |
 | `scripts/smoke-probes.sh` | `scripts/dev.sh smoke` 对这个插件逐项的探测 |
-| `scripts/publish.sh` | 发布一个版本：打 tag、推送；`images/` 里有自己构建的镜像时先构建、推送并按摘要写回（示例没有） |
+| `scripts/publish.sh` | 发布一个版本：打 tag、推送；`images/` 里有自己构建的镜像时先构建、推送并按摘要写回（本插件只用上游镜像，没有） |
 | `AGENTS.md` | 给人和 AI 编程代理的规则 |
 | `LICENSE` | 插件包自己的许可证；从模板新建时换成作者自己的名字和年份 |
 | `NOTICE` | 图标等第三方素材的许可和声明；图标是自己画的就写原创和插件许可证，见第 10 步 |
@@ -403,7 +403,7 @@ README 的图标一节只留一句来源和商标说明，指向 `NOTICE`，不�
 和实例名不同；核心起来后同样预装模型网关 magpie（`ai.usemagpie.magpie`）。第一次 `up` 时定下设置，写在 `.wonton/.env`：
 
 - 实例名（`WONTON_INSTANCE`）：默认是目录名（去掉 `wonton-plugin-` 前缀）加 4 位随机数。核心建的容器、网络和卷都带上它，
-  如（示例）`wonton-template3f2a--app-example-hello--web`，再打上 `wonton.instance` 标签。几个人或几个 Agent 共用一台
+  如（示例）`wonton-bookstack3f2a--app-bookstack-bookstack--bookstack`，再打上 `wonton.instance` 标签。几个人或几个 Agent 共用一台
   Docker 时各起各的开发环境，同一个插件也能在几套里同时装，卸载时只删自己那套的。
 - 基础域名是 `<实例名>.wonton.localhost`，核心在 `http://<实例名>.wonton.localhost:<端口>/`，插件网页在
   `http://<slug>.<实例名>.wonton.localhost:<端口>/`。

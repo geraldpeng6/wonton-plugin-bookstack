@@ -1,60 +1,123 @@
-# 示例插件：nginx 显示一个网页，向登录的人问好。照着 README 的“写插件”换成你的应用。
+# BookStack 家庭 Wiki：书、章节、页面，所见即所得编辑和全文搜索。
+# 登录走核心的身份提供方（OIDC），打开网页即以用户身份进入，不出现 BookStack 自己的登录页。
+# 上游文档指向的镜像是 linuxserver.io 打包的（BookStack 项目自己不发镜像），MIT 应用 + GPL-2.0 的 MariaDB 数据库，
+# 都用上游官方镜像、按清单列表（index）的摘要固定。
 services:
-  web:
-    # 镜像按摘要固定（多架构镜像写清单列表的摘要），标签只给人看。
-    image: nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:v26.09.2-ls295@sha256:33f61a72d9aaa021f7e687987b9fcb992673d9ca3fc08f63f5ddaddf59e94efc
+    # LinuxServer 镜像以 root 起初始化（迁移数据库、改属主）再降权到 PUID/PGID，数据目录归用户的用户。
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      # 网关代登录：SSI 回显的 Remote-User 只信核心带来的。官方镜像启动时对 templates 目录里的
-      # *.template 做 envsubst，把下面的地址换进 nginx 配置（见 web/default.conf.template）。
-      WONTON_CORE_ADDRESS: ${WONTON_CORE_ADDRESS}
-    # 包里的文件经 configs 交给容器（核心在启动前写进去），不能用卷挂载。
-    configs:
-      - source: site
-        target: /etc/nginx/templates/default.conf.template
-      - source: page
-        target: /usr/share/nginx/html/index.html
+      TZ: ${TZ}
+      # 网页地址用核心注入的插件网页地址；应用生成的链接和回调地址都以它为准。
+      APP_URL: ${WONTON_APP_URL}
+      # 会话加密密钥由核心生成保管，保留数据重装沿用同一个值（换了它已有会话全部失效）。
+      APP_KEY: base64:${WONTON_SECRET_APP_KEY}
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_DATABASE: bookstack
+      DB_USERNAME: bookstack
+      DB_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
+      # 界面默认中文，浏览器语言是英文的访客自己切。
+      APP_LANG: zh_CN
+      # 打开网页直接进 OIDC 登录：核心的身份提供方是唯一的登录方式，回插件网页时已是登录态，
+      # 用户不会看到 BookStack 自己的登录页。
+      AUTH_METHOD: oidc
+      AUTH_AUTO_INITIATE: "true"
+      OIDC_NAME: Wonton
+      OIDC_CLIENT_ID: ${WONTON_OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${WONTON_OIDC_CLIENT_SECRET}
+      OIDC_ISSUER: ${WONTON_OIDC_ISSUER}
+      OIDC_ISSUER_DISCOVER: "true"
+      # ID 令牌的 groups 声明（核心固定给用户发 ["owner"]）映射成 BookStack 角色：
+      # 每次登录同步，owner 命中内置的 Admin 角色，用户是管理员；没有的组撤销。
+      OIDC_USER_TO_GROUPS: "true"
+      OIDC_GROUPS_CLAIM: groups
+      OIDC_ADDITIONAL_SCOPES: groups
+      OIDC_REMOVE_FROM_GROUPS: "true"
+    volumes:
+      - ${WONTON_APP_DATA}/config:/config
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      # 首页在未登录时跟随 OIDC 自动跳转（302 到身份提供方），200/302 都算应用在应答；
+      # 数据库连不上时 migrate 失败、php-fpm 起不来，这里会失败。
+      test: ["CMD-SHELL", "code=$$(wget -q -S -O /dev/null --max-time 5 http://127.0.0.1/ 2>&1 | sed -n 's/^[[:space:]]*HTTP\\/[0-9.]* \\([0-9]*\\).*/\\1/p' | head -1); [ \"$${code:-500}\" = 200 ] || [ \"$${code:-500}\" = 302 ]"]
       interval: 30s
-      timeout: 5s
-      start_period: 30s
-      start_interval: 1s
+      timeout: 10s
+      start_period: 2m
+      start_interval: 5s
+    restart: unless-stopped
 
-configs:
-  site:
-    file: web/default.conf.template
-  page:
-    file: web/index.html
+  db:
+    image: mariadb:12.1.2@sha256:e487701b1f7e3f47319fe005b417c72becb67824a58b7bd35c6505f070f66dcd
+    environment:
+      MARIADB_DATABASE: bookstack
+      MARIADB_USER: bookstack
+      MARIADB_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${WONTON_SECRET_DB_ROOT_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      # ping 数据库本身，不只看进程；密码错时这里失败。
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 30s
+      timeout: 10s
+      start_period: 1m
+      start_interval: 5s
+    restart: unless-stopped
+
+volumes:
+  db-data:
 
 x-wonton:
   spec: "0.4"
-  # 换成你自己的：反向域名形式，装上以后不能改。
-  id: app.example.hello
+  id: app.bookstack.bookstack
   version: 0.1.0
   kind: app
-  title: { zh: 你好, en: Hello }
-  description: { zh: 向登录的人问好的示例网页, en: An example page that greets whoever is signed in }
-  icon: icon.svg
+  title: { en: BookStack }
+  description:
+    zh: "家里的 Wiki 和文档库：书、章节、页面，图文编辑，全文搜索"
+    en: "Your home wiki and docs: books, chapters and pages with a rich editor and full-text search"
+  icon: icon.png
   notices: [NOTICE]
   screenshots: [screenshots/home.png]
-  author: { name: Example }
-  homepage: https://nginx.org
-  # 应用（这里是 nginx）的许可证；插件包自己的许可证写在仓库的 LICENSE 里。
-  license: BSD-2-Clause
-  tags: { zh: [示例], en: [example] }
+  author: { name: geraldpeng6, url: https://github.com/geraldpeng6 }
+  homepage: https://www.bookstackapp.com
+  # 应用（BookStack）的许可证；数据库 MariaDB（GPL-2.0）作为独立容器分发。
+  license: MIT
+  tags:
+    zh: [文档]
+    en: [Documents]
   about:
     zh: |
-      插件模板里的示例：网关认出主人后，经请求头把用户名交给应用，网页上就是“你好，<用户名>”。
+      把家里的知识整理成书：一本书分章节，章节里一页页写，所见即所得编辑，图片和附件直接贴进页面，之后全文搜索。
+
+      打开就用：账号来自云吞的登录，你就是管理员。数据都在自己家里。
     en: |
-      The example from the plugin template: once the gateway recognises the owner, it passes the user name to
-      the app in a request header, and the page says hello to them.
+      Organise your knowledge into books: chapters hold pages, editing is rich-text with images and attachments, and everything stays searchable.
+
+      Just open it: your account comes from Wonton sign-in and you are the admin. Data stays at home.
   release_notes: { zh: 第一版。, en: First release. }
   webui:
-    service: web
+    service: bookstack
     port: 80
-    # 应用不认 OIDC 时，由网关在请求上加上用户名（README 的“网页入口和登录”）。
-    sso: proxy
-    proxy:
-      headers:
-        Remote-User: "{user}"
+    sso: oidc
+    oidc:
+      # BookStack 的 OIDC 回调路径（上游固定 /oidc/callback）。
+      redirect_paths: [/oidc/callback]
+  secrets:
+    # Laravel 会话加密密钥（APP_KEY），应用文档要求 base64 编码的 32 字节。
+    app_key:
+      generate: { bytes: 32, encoding: base64 }
+    db_password:
+      generate: { bytes: 32 }
+    db_root_password:
+      generate: { bytes: 32 }
   permissions: []
+  # 上游没写最低内存；BookStack + MariaDB 空闲实测约 350M（docker stats，验证时 v26.09.2-ls295），取 512M。
+  # 两个镜像都有 amd64 和 arm64（docker buildx imagetools inspect）。
+  requirements:
+    arch: [amd64, arm64]
+    memory: 512M
