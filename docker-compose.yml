@@ -82,7 +82,6 @@ x-wonton:
     en: "Your home wiki and docs: books, chapters and pages with a rich editor and full-text search"
   icon: icon.png
   notices: [NOTICE]
-  screenshots: [screenshots/home.png]
   author: { name: geraldpeng6, url: https://github.com/geraldpeng6 }
   homepage: https://www.bookstackapp.com
   # 应用（BookStack）的许可证；数据库 MariaDB（GPL-2.0）作为独立容器分发。
@@ -94,11 +93,11 @@ x-wonton:
     zh: |
       把家里的知识整理成书：一本书分章节，章节里一页页写，所见即所得编辑，图片和附件直接贴进页面，之后全文搜索。
 
-      打开就用：账号来自云吞的登录，你就是管理员。数据都在自己家里。
+      登录用云吞的账号（经核心的身份提供方，OIDC）。数据都在自己家里。
     en: |
       Organise your knowledge into books: chapters hold pages, editing is rich-text with images and attachments, and everything stays searchable.
 
-      Just open it: your account comes from Wonton sign-in and you are the admin. Data stays at home.
+      Sign in with your Wonton account (OIDC via the Wonton identity provider). Data stays at home.
   release_notes: { zh: 第一版。, en: First release. }
   webui:
     service: bookstack
