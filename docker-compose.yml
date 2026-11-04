@@ -40,9 +40,9 @@ services:
     volumes:
       - ${WONTON_APP_DATA}/config:/config
     healthcheck:
-      # 首页在未登录时跟随 OIDC 自动跳转（302 到身份提供方），200/302 都算应用在应答；
-      # 数据库连不上时 migrate 失败、php-fpm 起不来，这里会失败。
-      test: ["CMD-SHELL", "code=$$(wget -q -S -O /dev/null --max-time 5 http://127.0.0.1/ 2>&1 | sed -n 's/^[[:space:]]*HTTP\\/[0-9.]* \\([0-9]*\\).*/\\1/p' | head -1); [ \"$${code:-500}\" = 200 ] || [ \"$${code:-500}\" = 302 ]"]
+      # /status 是 BookStack 的就绪端点：连不上数据库或缓存时返回 500，只看进程活着时它也是 200。
+      # 用 -T 而不是 --max-time：容器里的 wget 是 busybox 的，不认 curl 的选项。
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1/status"]
       interval: 30s
       timeout: 10s
       start_period: 2m
