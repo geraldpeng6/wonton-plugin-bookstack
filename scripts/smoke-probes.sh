@@ -3,20 +3,22 @@
 
 web_assert() { grep -qi 'bookstack'; }   # stdin：OIDC 走完后落到应用真实页面
 
-# 走完浏览器式 OIDC：带主人会话打开应用首页 → AUTH_AUTO_INITIATE 重定向到 Hydra authorize
-# （核心会话自动登录，302 携 code 回 /oidc/callback）→ BookStack 建会话落回首页。
-# 自动登录靠隐藏表单的 JS 提交，curl 跟不了：取表单里的 _token 手动 POST /oidc/login，
-# 走完 BookStack 的本地处理，再打开设置的用户列表（管理员页），断言里面有主人的账号。
+# 走完浏览器式 OIDC：客人打开 / 是 302 到 /login（空体），自动提交表单在 /login
+# （实测 v26.09.2-ls295：GET /login 200，表单 POST /oidc/login，隐藏 _token）。
+# 取表单里的 _token 手动 POST /oidc/login，-L 跟完 Hydra 的 302 授权链（核心会话自动登录）
+# 回到应用首页；再打开设置的用户列表（管理员页，渲染显示名和邮箱），断言里面有主人账号。
 identity_check() {
   local login_page token reply
-  login_page="$(web_get /)" || { echo "GET / 失败（拿不到自动登录表单）"; return 1; }
+  login_page="$(web_get /login)" || { echo "GET /login 失败（拿不到自动登录表单）"; return 1; }
   token="$(grep -o 'name="_token" value="[^"]*"' <<<"$login_page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-  [[ -n "$token" ]] || { echo "首页没有 OIDC 自动登录表单（缺 _token）"; return 1; }
+  [[ -n "$token" ]] || { echo "/login 没有 OIDC 自动登录表单（缺 _token）"; return 1; }
   reply="$(curl -sS --noproxy '*' -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
     --data "_token=$token" "$SMOKE_WEB_URL/oidc/login")" ||
     { echo "POST /oidc/login 请求失败"; return 1; }
-  grep -qF "$SMOKE_OWNER" <<<"$reply" || {
-    echo "POST /oidc/login 后没有落到已登录页面，应用返回开头：$(head -c 200 <<<"$reply" | tr '\n' ' ')"
+  # 登录没走完时 BookStack 落回登录页（自动登录表单还在）；不在这里 grep 用户名：
+  # 首页头部显示的是 name 声明（核心发的是显示名，不一定是用户名），主人断言放下面的用户列表（有邮箱）。
+  grep -qE 'id="login-form"' <<<"$reply" && {
+    echo "POST /oidc/login 后落回登录页，OIDC 链没走完，应用返回开头：$(head -c 200 <<<"$reply" | tr '\n' ' ')"
     return 1
   }
   local users_page
