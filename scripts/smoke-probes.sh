@@ -79,7 +79,8 @@ data_check() {
     echo "走完 SSO 后拿不到搜索页，看到了：$(head -c 200 <<<"$page" | tr '\n' ' ')"
     return 1
   }
-  if grep -qF "$marker" <<<"$page" && grep -qF "$slug" <<<"$page"; then
+  # 搜索结果会把命中词用 <mark> 高亮、标记文字可能被标签切开，断言只认原文渲染的书链接。
+  if grep -qF "/books/$slug" <<<"$page"; then
     echo "按标记搜到书 $slug（标记 $marker），数据还在"
     return 0
   fi
