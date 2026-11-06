@@ -1,6 +1,6 @@
 # BookStack 家庭 Wiki：书、章节、页面，所见即所得编辑和全文搜索。
 # 登录走核心的身份提供方（OIDC），打开网页即跳核心登录；底座今天只有 http，BookStack 上游强制
-# https 签发方，登录链走不完（见 README 和 PR 的“底座的问题”），配置先照上游官方 OIDC 写法备好。
+# https 签发方，登录链走不完（见 README 的“已知状态”），配置先照上游官方 OIDC 写法备好。
 # 上游文档指向的镜像是 linuxserver.io 打包的（BookStack 项目自己不发镜像），MIT 应用 + GPL-2.0 的 MariaDB 数据库，
 # 都用上游官方镜像、按清单列表（index）的摘要固定。
 services:
