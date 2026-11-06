@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 插件合并前的端到端冒烟：用工作区的插件起一套一次性开发环境，四项真实请求，不用 mock。
 #   scripts/dev.sh smoke
-# 四项：装得上 / 网页打得开 / 主人身份能用 / 工具 Bot 调得到。任何 FAIL 退出非 0。
+# 四项：装得上 / 网页打得开 / 用户身份能用 / 工具 Bot 调得到。任何 FAIL 退出非 0。
 # 插件自己的探测在 scripts/smoke-probes.sh，写法见模板里的这个文件。
 # 作者已有的 .wonton 不动：整个工作区复制到临时目录，用冒烟自己的实例，跑完删掉容器、网络、卷和目录。
 #
@@ -49,7 +49,7 @@ cleanup() {
   image="$(sed -n 's/^WONTON_CORE_IMAGE=//p' "$copy/.wonton/.env" 2>/dev/null | tail -1)"
   if [[ -f "$copy/.wonton/.env" ]]; then
     say "清理实例 $instance"
-    (cd "$copy" && echo y | nice -n 19 timeout 900 scripts/dev.sh purge) >>"$LOG" 2>&1
+    (cd "$copy" && nice -n 19 timeout 900 scripts/dev.sh purge --yes) >>"$LOG" 2>&1
   fi
   docker ps -aq --filter "label=wonton.instance=$instance" | xargs -r docker rm -f >/dev/null 2>&1
   docker network ls -q --filter "label=wonton.instance=$instance" | xargs -r docker network rm >/dev/null 2>&1
@@ -84,16 +84,21 @@ finish() {
 }
 trap finish EXIT
 
-# 全机最多 2 套插件验证栈，其余排队（只数别人的，自己还没起）。
-foreign="$(docker ps --filter 'label=wonton.instance' --format '{{.Label "wonton.instance"}}' | sort -u | wc -l)"
-waited=0
-while ((foreign >= 2)); do
-  ((waited == 0)) && say "已有 $foreign 套验证栈在跑，排队等待"
-  ((waited >= 45)) && die "等了 45 分钟还是 $foreign 套验证栈，排队放弃"
-  sleep 60
-  waited=$((waited + 1))
-  foreign="$(docker ps --filter 'label=wonton.instance' --format '{{.Label "wonton.instance"}}' | sort -u | wc -l)"
-done
+# 共用一台 Docker 时可以限制同时跑的验证栈：WONTON_SMOKE_MAX_STACKS=<套数>（只数别人的，自己还没起），
+# WONTON_SMOKE_WAIT_MINUTES 是最多等多久（默认 45）。不设就不排队：自己的开发环境也算一套，默认限制会挡住只有一个人的主机。
+if [[ -n "${WONTON_SMOKE_MAX_STACKS:-}" ]]; then
+  [[ "$WONTON_SMOKE_MAX_STACKS" =~ ^[1-9][0-9]*$ ]] || die "WONTON_SMOKE_MAX_STACKS 要是正整数：$WONTON_SMOKE_MAX_STACKS"
+  wait_minutes="${WONTON_SMOKE_WAIT_MINUTES:-45}"
+  [[ "$wait_minutes" =~ ^[0-9]+$ ]] || die "WONTON_SMOKE_WAIT_MINUTES 要是整数：$wait_minutes"
+  waited=0
+  while foreign="$(docker ps --filter 'label=wonton.instance' --format '{{.Label "wonton.instance"}}' | sort -u | wc -l)"
+    ((foreign >= WONTON_SMOKE_MAX_STACKS)); do
+    ((waited == 0)) && say "已有 $foreign 套验证栈在跑（上限 $WONTON_SMOKE_MAX_STACKS），排队等待"
+    ((waited >= wait_minutes)) && die "等了 $wait_minutes 分钟还是 $foreign 套验证栈，排队放弃（没有跑任何插件检查）"
+    sleep 60
+    waited=$((waited + 1))
+  done
+fi
 
 say "复制工作区（不动 .wonton）"
 mkdir "$copy"
@@ -138,7 +143,7 @@ if [[ -f "$probes" ]]; then
   . "$probes"
 fi
 
-# 公共助手，给探测用：dweb / web_get 带主人的会话，mcp 走同一套 dev.sh 入口。
+# 公共助手，给探测用：dweb / web_get 带用户的会话，mcp 走同一套 dev.sh 入口。
 dweb() { smoke_dev web --jar "$SMOKE_JAR" "$@"; }
 web_get() { local path="$1"; shift; curl -sS --noproxy '*' --fail-with-body -b "$SMOKE_JAR" "$@" "$SMOKE_WEB_URL$path"; }
 mcp() {
@@ -167,17 +172,16 @@ fi
 
 if ! smoke_dev up >>"$LOG" 2>&1; then
   fail 装得上 "dev.sh up 失败，看 $LOG"
-  for item in 网页打得开 主人身份能用 工具Bot调得到; do fail "$item" "环境没起来"; done
+  for item in 网页打得开 用户身份能用 工具Bot调得到; do fail "$item" "环境没起来"; done
   exit 0
 fi
 read_env() { sed -n "s/^$1=//p" "$copy/.wonton/.env" | tail -1; }
 SMOKE_BASE="http://$instance.wonton.localhost:$(read_env WONTON_PORT)"
-SMOKE_TOKEN="$(smoke_dev token)" || { fail 装得上 "读不到主人令牌"; exit 0; }
+SMOKE_TOKEN="$(smoke_dev token)" || { fail 装得上 "读不到用户令牌"; exit 0; }
 core="wonton-$instance--core"
 SMOKE_OWNER="$(docker exec "$core" cat "$(read_env WONTON_DATA_DIR)/core/owner.json" 2>/dev/null | jq -r '.username // empty')"
 SMOKE_OWNER="${SMOKE_OWNER:-owner}"
 SMOKE_OWNER_EMAIL="$(read_env WONTON_OWNER_EMAIL)"
-SMOKE_BASE="$SMOKE_BASE" SMOKE_TOKEN="$SMOKE_TOKEN" SMOKE_OWNER="$SMOKE_OWNER" SMOKE_OWNER_EMAIL="$SMOKE_OWNER_EMAIL"
 SMOKE_PLUGIN_ID="$plugin_id" SMOKE_SLUG="$slug" SMOKE_SSO="$sso" SMOKE_MCP="$has_mcp"
 export SMOKE_DIR SMOKE_INSTANCE SMOKE_JAR SMOKE_TOOLS SMOKE_BASE SMOKE_TOKEN SMOKE_OWNER SMOKE_OWNER_EMAIL
 export SMOKE_PLUGIN_ID SMOKE_SLUG SMOKE_SSO SMOKE_MCP
@@ -214,7 +218,7 @@ if declare -F before_install >/dev/null; then
 fi
 if ! smoke_dev install --yes >>"$LOG" 2>&1; then
   fail 装得上 "dev.sh install --yes 失败，看 $LOG"
-  for item in 网页打得开 主人身份能用 工具Bot调得到; do fail "$item" "装不上"; done
+  for item in 网页打得开 用户身份能用 工具Bot调得到; do fail "$item" "装不上"; done
   exit 0
 fi
 line="$(status_wait "$plugin_id" 40)" || { fail 装得上 "状态不是 running healthy：$line"; exit 0; }
@@ -224,15 +228,15 @@ else
   pass 装得上 "${chk_note}install 后状态 running healthy（$line）；Hermes running healthy"
 fi
 
-# ---------- 2/3. 网页与主人身份 ----------
-say "2/3. 网页打得开与主人身份能用"
-plugins_json="$(smoke_api GET /_wonton/api/plugins)" || { fail 网页打得开 "列不出插件"; fail 主人身份能用 "列不出插件"; exit 0; }
+# ---------- 2/3. 网页与用户身份 ----------
+say "2/3. 网页打得开与用户身份能用"
+plugins_json="$(smoke_api GET /_wonton/api/plugins)" || { fail 网页打得开 "列不出插件"; fail 用户身份能用 "列不出插件"; exit 0; }
 SMOKE_WEB_URL="$(jq -rn --arg id "$plugin_id" --arg json "$plugins_json" '$json | fromjson | .plugins[] | select(.id==$id) | .web_url // ""')"
 export SMOKE_WEB_URL
 
 if [[ "$has_webui" != 1 ]]; then
   na 网页打得开 "清单没有 webui"
-  na 主人身份能用 "清单没有 webui"
+  na 用户身份能用 "清单没有 webui"
 else
   smoke_dev session >>"$LOG" 2>&1 || say "会话建立失败（后面的探测会失败）"
   unauth_code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 60 "$SMOKE_WEB_URL/")"
@@ -258,13 +262,13 @@ else
   fi
 
   if [[ "$IDENTITY_NA" == 1 ]]; then
-    na 主人身份能用 "${SMOKE_NOTE:-应用没有可断言的用户体系}"
+    na 用户身份能用 "${SMOKE_NOTE:-应用没有可断言的用户体系}"
   elif ! declare -F identity_check >/dev/null; then
-    fail 主人身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是主人管理员；没有用户体系就写 IDENTITY_NA=1）"
+    fail 用户身份能用 "没写探测：在 scripts/smoke-probes.sh 里写 identity_check（调应用自己的当前用户接口，断言是用户管理员；没有用户体系就写 IDENTITY_NA=1）"
   elif identity_check >>"$LOG" 2>&1; then
-    pass 主人身份能用 "sso=$sso：应用认出主人 $SMOKE_OWNER（管理员）"
+    pass 用户身份能用 "sso=$sso：应用认出用户 $SMOKE_OWNER（管理员）"
   else
-    fail 主人身份能用 "identity_check 失败，见 $LOG 末尾：$(tail -c 200 "$LOG" | tr '\n' ' ')"
+    fail 用户身份能用 "identity_check 失败，见 $LOG 末尾：$(tail -c 200 "$LOG" | tr '\n' ' ')"
   fi
 fi
 
@@ -297,7 +301,7 @@ else
       fail 工具Bot调得到 "mcp_check 失败，见 $LOG 末尾：$(tail -c 200 "$LOG" | tr '\n' ' ')"
     fi
   elif [[ "$n_mine" -lt 1 ]]; then
-    fail 工具Bot调得到 "tools/list 没有 $slug__ 前缀工具"
+    fail 工具Bot调得到 "tools/list 没有 ${slug}__ 前缀工具"
   elif [[ -z "$MCP_TOOL" ]]; then
     pass 工具Bot调得到 "tools/list 有本插件工具（探测没指定只读工具）"
   else
