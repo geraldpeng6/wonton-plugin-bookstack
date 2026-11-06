@@ -1,5 +1,6 @@
 # BookStack 家庭 Wiki：书、章节、页面，所见即所得编辑和全文搜索。
-# 登录走核心的身份提供方（OIDC），打开网页即以用户身份进入，不出现 BookStack 自己的登录页。
+# 登录走核心的身份提供方（OIDC），打开网页即跳核心登录；底座今天只有 http，BookStack 上游强制
+# https 签发方，登录链走不完（见 README 和 PR 的“底座的问题”），配置先照上游官方 OIDC 写法备好。
 # 上游文档指向的镜像是 linuxserver.io 打包的（BookStack 项目自己不发镜像），MIT 应用 + GPL-2.0 的 MariaDB 数据库，
 # 都用上游官方镜像、按清单列表（index）的摘要固定。
 services:
@@ -22,8 +23,10 @@ services:
       DB_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
       # 界面默认中文，浏览器语言是英文的访客自己切。
       APP_LANG: zh_CN
-      # 打开网页直接进 OIDC 登录：核心的身份提供方是唯一的登录方式，回插件网页时已是登录态，
-      # 用户不会看到 BookStack 自己的登录页。
+      # LinuxServer 镜像以 root 起初始化后降到这个用户；数据目录核心也按同一对 uid:gid 交出。
+      PUID: ${PUID}
+      PGID: ${PGID}
+      # 打开网页直接发起 OIDC 登录：核心的身份提供方是唯一的登录方式，不出现 BookStack 自己的登录页。
       AUTH_METHOD: oidc
       AUTH_AUTO_INITIATE: "true"
       OIDC_NAME: Wonton
@@ -31,12 +34,6 @@ services:
       OIDC_CLIENT_SECRET: ${WONTON_OIDC_CLIENT_SECRET}
       OIDC_ISSUER: ${WONTON_OIDC_ISSUER}
       OIDC_ISSUER_DISCOVER: "true"
-      # ID 令牌的 groups 声明（核心固定给用户发 ["owner"]）映射成 BookStack 角色：
-      # 每次登录同步，owner 命中内置的 Admin 角色，用户是管理员；没有的组撤销。
-      OIDC_USER_TO_GROUPS: "true"
-      OIDC_GROUPS_CLAIM: groups
-      OIDC_ADDITIONAL_SCOPES: groups
-      OIDC_REMOVE_FROM_GROUPS: "true"
     volumes:
       - ${WONTON_APP_DATA}/config:/config
     healthcheck:
@@ -72,7 +69,7 @@ volumes:
   db-data:
 
 x-wonton:
-  spec: "0.4"
+  spec: "0.6"
   id: app.bookstack.bookstack
   version: 0.1.0
   kind: app
