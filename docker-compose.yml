@@ -42,6 +42,8 @@ services:
   # 一次性服务：等应用健康（迁移已跑完）后初始化管理员。bookstack:create-admin --initial 的语义
   # 正合幂等要求：全新库直接创建；只有默认 admin@admin.com 时把它改成给定资料；已有非默认管理员
   # （保留数据重装、升级）时跳过（退出码 2），密码保持不变。所有非 0/2 的退出都让安装失败。
+  # 以 root 跑（镜像的 /app/www/bootstrap/cache 只归 root 组，PUID 写不了；镜像官方的 artisan
+  # 用法就是 root 的 docker exec）。成功路径只在镜像内的缓存目录写文件，/config 里落盘的只有头像。
   init:
     image: lscr.io/linuxserver/bookstack:v26.09.2-ls295@sha256:33f61a72d9aaa021f7e687987b9fcb992673d9ca3fc08f63f5ddaddf59e94efc
     depends_on:
@@ -50,7 +52,6 @@ services:
     # 镜像的入口是 s6 的 /init、工作目录是 /，跑 artisan 要覆盖入口并指到 webroot。
     entrypoint: ["sh", "-c"]
     working_dir: /app/www
-    user: "${PUID}:${PGID}"
     command:
       - |
         php artisan bookstack:create-admin --initial \
