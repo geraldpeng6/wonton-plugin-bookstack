@@ -1,6 +1,8 @@
 # BookStack 家庭 Wiki：书、章节、页面，所见即所得编辑和全文搜索。
-# 登录走核心的身份提供方（OIDC），打开网页即跳核心登录；底座今天只有 http，BookStack 上游强制
-# https 签发方，登录链走不完（见 README 的“已知状态”），配置先照上游官方 OIDC 写法备好。
+# 登录用 BookStack 自己的账号（sso: none）：核心只签发 http 的 OIDC，BookStack 上游硬性要求 https
+# 签发方（核心网关在隧道里不用 TLS），接不上，原因写在 README。管理员不设任何默认账密：
+# init 一次性服务在首次启动时把它建成主人的邮箱 + 核心生成的随机密码，账密经 lan.client
+# 显示在插件详情页（lan_webui 开关后面）。
 # 上游文档指向的镜像是 linuxserver.io 打包的（BookStack 项目自己不发镜像），MIT 应用 + GPL-2.0 的 MariaDB 数据库，
 # 都用上游官方镜像、按清单列表（index）的摘要固定。
 services:
@@ -23,17 +25,8 @@ services:
       DB_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
       # 界面默认中文，浏览器语言是英文的访客自己切。
       APP_LANG: zh_CN
-      # LinuxServer 镜像以 root 起初始化后降到这个用户；数据目录核心也按同一对 uid:gid 交出。
       PUID: ${PUID}
       PGID: ${PGID}
-      # 打开网页直接发起 OIDC 登录：核心的身份提供方是唯一的登录方式，不出现 BookStack 自己的登录页。
-      AUTH_METHOD: oidc
-      AUTH_AUTO_INITIATE: "true"
-      OIDC_NAME: Wonton
-      OIDC_CLIENT_ID: ${WONTON_OIDC_CLIENT_ID}
-      OIDC_CLIENT_SECRET: ${WONTON_OIDC_CLIENT_SECRET}
-      OIDC_ISSUER: ${WONTON_OIDC_ISSUER}
-      OIDC_ISSUER_DISCOVER: "true"
     volumes:
       - ${WONTON_APP_DATA}/config:/config
     healthcheck:
@@ -45,6 +38,41 @@ services:
       start_period: 2m
       start_interval: 5s
     restart: unless-stopped
+
+  # 一次性服务：等应用健康（迁移已跑完）后初始化管理员。bookstack:create-admin --initial 的语义
+  # 正合幂等要求：全新库直接创建；只有默认 admin@admin.com 时把它改成给定资料；已有非默认管理员
+  # （保留数据重装、升级）时跳过（退出码 2），密码保持不变。所有非 0/2 的退出都让安装失败。
+  init:
+    image: lscr.io/linuxserver/bookstack:v26.09.2-ls295@sha256:33f61a72d9aaa021f7e687987b9fcb992673d9ca3fc08f63f5ddaddf59e94efc
+    depends_on:
+      bookstack:
+        condition: service_healthy
+    # 镜像的入口是 s6 的 /init、工作目录是 /，跑 artisan 要覆盖入口并指到 webroot。
+    entrypoint: ["sh", "-c"]
+    working_dir: /app/www
+    user: "${PUID}:${PGID}"
+    command:
+      - |
+        php artisan bookstack:create-admin --initial \
+          --email="$$WONTON_OWNER_EMAIL" --name="$$WONTON_OWNER_NAME" --password="$$WONTON_SECRET_ADMIN_PASSWORD"
+        rc=$$?
+        [ "$$rc" = 0 ] || [ "$$rc" = 2 ] || exit "$$rc"
+    environment:
+      # 管理员登录用邮箱，必须先填好云吞邮箱才能装。
+      WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?}
+      WONTON_OWNER_NAME: ${WONTON_OWNER_NAME}
+      WONTON_SECRET_ADMIN_PASSWORD: ${WONTON_SECRET_ADMIN_PASSWORD}
+      # artisan 走同一套应用配置：应用密钥、数据库连接都要和主服务一致。
+      APP_KEY: base64:${WONTON_SECRET_APP_KEY}
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_DATABASE: bookstack
+      DB_USERNAME: bookstack
+      DB_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - ${WONTON_APP_DATA}/config:/config
+    restart: "no"
 
   db:
     image: mariadb:12.1.2@sha256:e487701b1f7e3f47319fe005b417c72becb67824a58b7bd35c6505f070f66dcd
@@ -75,8 +103,8 @@ x-wonton:
   kind: app
   title: { en: BookStack }
   description:
-    zh: "家里的 Wiki 和文档库：书、章节、页面，图文编辑，全文搜索"
-    en: "Your home wiki and docs: books, chapters and pages with a rich editor and full-text search"
+    zh: "家里的 Wiki 和文档库：书、章节、页面，图文编辑，全文搜索。用 BookStack 自己的账号登录，不走云吞登录。"
+    en: "Your home wiki and docs: books, chapters and pages with a rich editor and full-text search. Signs in with BookStack's own account, not the Wonton login."
   icon: icon.png
   notices: [NOTICE]
   author: { name: geraldpeng6, url: https://github.com/geraldpeng6 }
@@ -90,20 +118,29 @@ x-wonton:
     zh: |
       把家里的知识整理成书：一本书分章节，章节里一页页写，所见即所得编辑，图片和附件直接贴进页面，之后全文搜索。
 
-      登录用云吞的账号（经核心的身份提供方，OIDC）。数据都在自己家里。
+      用 BookStack 自己的账号登录，不走云吞登录。
     en: |
       Organise your knowledge into books: chapters hold pages, editing is rich-text with images and attachments, and everything stays searchable.
 
-      Sign in with your Wonton account (OIDC via the Wonton identity provider). Data stays at home.
+      Signs in with BookStack's own account, not the Wonton login.
   release_notes: { zh: 第一版。, en: First release. }
   webui:
     service: bookstack
     port: 80
-    sso: oidc
-    oidc:
-      # BookStack 的 OIDC 回调路径（上游固定 /oidc/callback）。
-      redirect_paths: [/oidc/callback]
+    sso: none
+  # 管理员账密走 lan.client 显示在插件详情页（lan_webui 开关后面，开关打开前端口不开）。
+  # 管理员账号由 init 服务在首次启动时建好，邮箱是主人的邮箱，密码是核心生成的随机值。
+  lan:
+    ports:
+      - { service: bookstack, port: 80 }
+    client:
+      address: "http://{host}"
+      username: "{email}"
+      password: "{secret:admin_password}"
   secrets:
+    # 管理员密码：核心生成、详情页展示，init 服务写进应用；保留数据重装沿用同一个值（密码不变）。
+    admin_password:
+      generate: { bytes: 32 }
     # Laravel 会话加密密钥（APP_KEY），应用文档要求 base64 编码的 32 字节。
     app_key:
       generate: { bytes: 32, encoding: base64 }
@@ -111,7 +148,11 @@ x-wonton:
       generate: { bytes: 32 }
     db_root_password:
       generate: { bytes: 32 }
-  permissions: []
+  # network.lan：lan.client 和详情页展示账密要它；webui 端口列在 lan.ports 里，lan_webui 开关默认关。
+  # owner.identity：管理员账号用主人的邮箱和用户名。
+  permissions:
+    - network.lan
+    - owner.identity
   # 上游没写最低内存；BookStack + MariaDB 空闲实测约 350M（docker stats，验证时 v26.09.2-ls295），取 512M。
   # 两个镜像都有 amd64 和 arm64（docker buildx imagetools inspect）。
   requirements:
