@@ -1,13 +1,10 @@
 # shellcheck shell=bash
-# BookStack：sso=none（用 BookStack 自己的账号登录，不走云吞登录）；清单没有 mcp。
+# BookStack：sso=none（用 BookStack 自己的账号登录，不走云吞登录）。
 # 管理员由 init 一次性服务在首次启动时建好：主人的邮箱 + 核心生成的随机密码（secrets.admin_password），
-# 账密经 lan.client 显示在插件详情页。云吞身份没有可断言的入口，身份项按规范记 N/A；
-# 数据项用管理员账密走应用自己的登录表单：data_write 登录并建一本带随机标记的书，
-# data_check 用同一份账密重新登录再搜这本书——密码变了或数据丢了都会在这里失败。
-
-export IDENTITY_NA=1
-export SMOKE_NOTE="sso: none：登录用 BookStack 自己的账号（管理员账密在插件详情页），不走云吞登录"
-export E2E_NOTE="$SMOKE_NOTE"
+# 账密经 lan.client 显示在插件详情页。
+# 身份：identity_check 用管理员账密走应用登录表单，断言进入管理面板且当前用户就是主人的邮箱。
+# 数据：data_write 登录后建一本带随机标记的书；data_check 用同一份账密重新登录再搜这本书——
+#       密码变了或数据丢了都会在这里失败。
 
 web_assert() { grep -qi 'bookstack'; }   # stdin：应用自己的登录页（未登录时网关后的第一屏）
 
@@ -16,6 +13,10 @@ web_assert() { grep -qi 'bookstack'; }   # stdin：应用自己的登录页（�
 _bs_container() {
   local id="${SMOKE_PLUGIN_ID:-${PROBES_PLUGIN_ID:-${plugin_id:-}}}"
   printf 'wonton-%s--%s--init' "${SMOKE_INSTANCE:-}" "${id//./-}"
+}
+
+_bs_marker_file() { # 标记文件：SMOKE_STATE 在 dev.sh probes 里是目录，目录里放标记文件
+  if [[ -d "${SMOKE_STATE:-}" ]]; then printf '%s/data-marker' "$SMOKE_STATE"; else printf '%s' "${SMOKE_STATE:-}"; fi
 }
 
 _bs_admin_credentials() {
@@ -49,9 +50,9 @@ _bs_login() {
 }
 
 data_write() {
-  [[ -n "${SMOKE_STATE:-}" ]] || { echo "SMOKE_STATE 没设置：套件没传状态文件"; return 1; }
   local marker page csrf loc slug book_page
   marker="BS-SMOKE-$(date +%s)-$RANDOM"
+  dweb --fresh / -L >/dev/null || { echo "重建网关会话失败"; return 1; }
   _bs_admin_credentials || return 1
   _bs_login || return 1
   page="$(web_get /)" || { echo "登录后拿不到应用首页"; return 1; }
@@ -73,7 +74,7 @@ data_write() {
     echo "建的书页面里没有标记（可能跳回了别的页面），看到了：$(head -c 200 <<<"$book_page" | tr '\n' ' ')"
     return 1
   }
-  printf '%s\t%s\n' "$marker" "$slug" >"$SMOKE_STATE" || { echo "写不进状态文件 $SMOKE_STATE"; return 1; }
+  printf '%s\t%s\n' "$marker" "$slug" >"$(_bs_marker_file)" || { echo "写不进状态文件 $(_bs_marker_file)"; return 1; }
   echo "已建书 $slug（标记 $marker）"
 }
 
@@ -82,6 +83,7 @@ data_check() {
   line="$(_bs_state_line)" || { echo "$line"; return 1; }
   marker="${line%%$'\t'*}"
   slug="${line##*$'\t'}"
+  dweb --fresh / -L >/dev/null || { echo "重建网关会话失败"; return 1; }
   _bs_admin_credentials || return 1
   _bs_login || return 1
   page="$(web_get "/search?term=$marker")" || {
@@ -98,13 +100,23 @@ data_check() {
 }
 
 _bs_state_line() {  # 成功时把状态行打到 stdout，失败时把原因打到 stdout 并返回 1
-  if [[ -z "${SMOKE_STATE:-}" ]]; then
-    echo "SMOKE_STATE 没设置：套件没传状态文件"
+  local mf
+  mf="$(_bs_marker_file)"
+  if [[ ! -s "$mf" ]]; then
+    echo "状态文件 $mf 不存在或为空：data_write 没跑过？（SMOKE_STATE=${SMOKE_STATE:-未设置}）"
     return 1
   fi
-  if [[ ! -s "$SMOKE_STATE" ]]; then
-    echo "状态文件 $SMOKE_STATE 不存在或为空：data_write 没跑过？"
-    return 1
-  fi
-  head -n 1 "$SMOKE_STATE"
+  head -n 1 "$mf"
+}
+
+identity_check() { # 应用自己的登录链：管理员账密（init 容器配置里）登录后进管理面板，当前用户是主人邮箱
+  SMOKE_WEB_URL="${SMOKE_WEB_URL%/}"  # 套件给的地址带尾斜杠，拼路径前剥掉，避免 // 打不进路由
+  local page
+  _bs_admin_credentials || return 1
+  _bs_login || return 1
+  page="$(web_get /settings/users)" || { echo "管理面板 /settings/users 打不开（非管理员？）：$page"; return 1; }
+  grep -qF "$_BS_EMAIL" <<<"$page" || { echo "管理面板里没有主人邮箱 $_BS_EMAIL：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
+  page="$(web_get /my-account/profile)" || { echo "/my-account/profile 打不开：$page"; return 1; }
+  grep -qF "$_BS_EMAIL" <<<"$page" || { echo "当前用户不是主人（$_BS_EMAIL）：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
+  echo "登录链通过：应用认出主人 $_BS_EMAIL，且能进管理面板"
 }
