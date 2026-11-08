@@ -116,7 +116,7 @@ identity_check() { # 应用自己的登录链：管理员账密（init 容器配
   _bs_login || return 1
   page="$(web_get /settings/users)" || { echo "管理面板 /settings/users 打不开（非管理员？）：$page"; return 1; }
   grep -qF "$_BS_EMAIL" <<<"$page" || { echo "管理面板里没有主人邮箱 $_BS_EMAIL：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
-  page="$(web_get /my-account)" || { echo "/my-account 打不开：$page"; return 1; }
+  page="$(web_get /my-account/profile)" || { echo "/my-account/profile 打不开：$page"; return 1; }
   grep -qF "$_BS_EMAIL" <<<"$page" || { echo "当前用户不是主人（$_BS_EMAIL）：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
   echo "登录链通过：应用认出主人 $_BS_EMAIL，且能进管理面板"
 }
