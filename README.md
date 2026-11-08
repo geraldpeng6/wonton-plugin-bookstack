@@ -15,8 +15,8 @@
   http 的 OIDC——核心网关在隧道里不用 TLS（`wonton-core` 的 `config.rs` 把公开地址的 scheme 写死
   `http`）。等核心网关支持 https 后可以再接。
 - 没有默认账密。首次启动时 `init` 一次性服务用 BookStack 自带的
-  `php artisan bookstack:create-admin --initial` 把管理员建成**你的云吞邮箱** + 核心生成的**随机密码**
-  （所以要装这个插件，得先在云吞里填好邮箱）。保留数据重装、升级都不动这个账号和密码；重装时还会把
+  `php artisan bookstack:create-admin --initial` 把管理员建成**你的云吞邮箱**（核心给每个人的内部
+  邮箱，装插件就有，不用先填）+ 核心生成的**随机密码**。保留数据重装、升级都不动这个账号和密码；重装时还会把
   管理员账号的邮箱对成当前的云吞邮箱（邮箱即登录名；之前装的实例里存的是当时填的旧邮箱）。上游没有
   改用户邮箱的命令，对齐走应用自带的 `php artisan tinker`；应用里有多个管理员时认不出哪个是你的账号，
   init 会报错停下，先在应用的「设置 - 用户」里整理再重装。
@@ -30,8 +30,8 @@
 
 ## 配置
 
-装上即用，没有要用户填的配置（云吞邮箱在 App 的资料里填好即可，没填邮箱装不了）。核心注入的变量只在
-compose 里引用：`WONTON_APP_URL`（生成绝对链接）、`WONTON_OWNER_EMAIL`/`WONTON_OWNER_NAME`（管理员账号）、
+装上即用，没有要用户填的配置。核心注入的变量只在 compose 里引用：`WONTON_APP_URL`（生成绝对链接）、
+`WONTON_OWNER_EMAIL`/`WONTON_OWNER_NAME`（管理员账号）、
 `WONTON_SMTP_HOST`/`WONTON_SMTP_PORT`/`WONTON_MAIL_FROM`（应用发信用的云吞内部邮箱）、
 `WONTON_SECRET_*`（管理员密码和应用密钥、数据库密码）、`TZ`/`PUID`/`PGID`。
 

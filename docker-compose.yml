@@ -92,7 +92,7 @@ services:
           }
         '
     environment:
-      # 管理员登录用邮箱，必须先填好云吞邮箱才能装。
+      # 管理员登录用邮箱；内部邮箱由核心保证总有值，不用主人先填。
       WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?}
       WONTON_OWNER_NAME: ${WONTON_OWNER_NAME}
       WONTON_SECRET_ADMIN_PASSWORD: ${WONTON_SECRET_ADMIN_PASSWORD}
