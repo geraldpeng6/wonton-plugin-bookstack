@@ -69,19 +69,26 @@ services:
         [ "$$rc" = 0 ] || [ "$$rc" = 2 ] || exit "$$rc"
         # 邮箱即登录名。上游没有改用户邮箱的命令，走应用自己的 tinker（模型层）
         # 把管理员账号的邮箱对到当前云吞邮箱：0.11 之前装的实例里存的是当时填的旧邮箱，主人的用户名
-        # 变过也一样。已经是这个值就不动（幂等）；应用里有多个管理员时认不出哪个是主人的账号，
-        # 报错停下来让主人在应用里整理后再重装。tinker --execute 里失败不能用裸 throw（PsySH 吞掉
-        # 异常、退出码是 0）：整段包进 try，catch 里 exit(1) 才能让安装失败；exit() 只能写在 catch
-        # 里——在 try 里调 exit() 抛出的 BreakException 会被这个 catch 捕住。成功路径自然结束。
+        # 变过也一样。对齐只是顺手的事，不拦安装：只有一个管理员直接对；多个管理员先按 OIDC 的
+        # external_auth_id（= 云吞用户名）认主人的账号，认不出就打一行日志跳过，主人可以在应用的
+        # 「设置 - 用户」里手动改。已经是这个值就不动（幂等）。tinker --execute 里失败不能用裸 throw
+        # （PsySH 吞掉异常、退出码是 0）：整段包进 try，catch 里 exit(1) 才能让安装失败；exit() 只能
+        # 写在 catch 里——在 try 里调 exit() 抛出的 BreakException 会被这个 catch 捕住。成功路径自然结束。
         php artisan tinker --execute='
           try {
             $$admins = \BookStack\Users\Models\Role::getSystemRole("admin")->users;
-            if ($$admins->count() !== 1) {
-              throw new Exception("应用里有 " . $$admins->count() . " 个管理员，认不出哪个是主人的账号；请先在应用的「设置 - 用户」里整理，再重装本插件");
-            }
             $$email = getenv("WONTON_OWNER_EMAIL");
-            $$user = $$admins->first();
-            if ($$user->email !== $$email) {
+            $$user = null;
+            if ($$admins->count() === 1) {
+              $$user = $$admins->first();
+            } else {
+              $$owner = (string) getenv("WONTON_OWNER_NAME");
+              $$byOidc = $$admins->filter(function ($$u) use ($$owner) { return (string) $$u->external_auth_id === $$owner; });
+              $$user = $$byOidc->count() === 1 ? $$byOidc->first() : null;
+            }
+            if ($$user === null) {
+              echo "本次没有对齐管理员邮箱：应用里有 " . $$admins->count() . " 个管理员，认不出哪个是你的账号；请在应用的「设置 - 用户」里手动把账号邮箱改成 " . $$email . "（安装不受影响）\n";
+            } elseif ($$user->email !== $$email) {
               $$user->email = $$email;
               $$user->save();
               echo "管理员邮箱已对到 " . $$email . "\n";
