@@ -110,6 +110,7 @@ _bs_state_line() {  # 成功时把状态行打到 stdout，失败时把原因打
 }
 
 identity_check() { # 应用自己的登录链：管理员账密（init 容器配置里）登录后进管理面板，当前用户是主人邮箱
+  SMOKE_WEB_URL="${SMOKE_WEB_URL%/}"  # 套件给的地址带尾斜杠，拼路径前剥掉，避免 // 打不进路由
   local page
   _bs_admin_credentials || return 1
   _bs_login || return 1
