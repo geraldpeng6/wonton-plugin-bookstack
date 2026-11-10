@@ -52,17 +52,16 @@ _bs_container_credentials() {
 # 容器的配置里读，并说明走的是旧路（升级后的身份、数据两项仍会走接口）。
 _bs_admin_credentials() {
   local list me
-  _BS_LABEL=""
-  if list="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets")"; then
-    _BS_LABEL="$(jq -r '.secrets[] | select(.name == "admin_password") | .label' <<<"$list")"
-  fi
+  list="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets")" ||
+    { echo "读不到主人可见的密钥列表（GET …/secrets 失败）"; return 1; }
+  _BS_LABEL="$(jq -r '.secrets[] | select(.name == "admin_password") | .label' <<<"$list")"
   if [[ -n "$_BS_LABEL" ]]; then
     me="$(_bs_api GET /_wonton/api/me)" || { echo "读不到主人资料（GET /me 失败）"; return 1; }
     _BS_EMAIL="$(jq -r '.email // empty' <<<"$me")"
     _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
       { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
   else
-    echo "密钥接口没给出 admin_password（旧版本没有 show_owner？），从 init 容器配置读"
+    echo "密钥列表里没有 admin_password（旧版本没有 show_owner？），从 init 容器配置读"
     _bs_container_credentials || return 1
   fi
   [[ -n "$_BS_EMAIL" && -n "$_BS_PASSWORD" ]] ||
