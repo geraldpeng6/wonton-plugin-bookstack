@@ -154,5 +154,7 @@ identity_check() { # 应用自己的登录链：详情页接口取到的管理�
   grep -qF "$_BS_EMAIL" <<<"$page" || { echo "管理面板里没有主人邮箱 $_BS_EMAIL：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
   page="$(web_get /my-account/profile)" || { echo "/my-account/profile 打不开：$page"; return 1; }
   grep -qF "$_BS_EMAIL" <<<"$page" || { echo "当前用户不是主人（$_BS_EMAIL）：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
-  echo "登录通过（密码来源：${_BS_LABEL:+详情页接口「$_BS_LABEL」}${_BS_LABEL:-init 容器配置（旧版本）}）：应用认出主人 $_BS_EMAIL，且能进管理面板"
+  local src="init 容器配置（旧版本）"
+  [[ -n "$_BS_LABEL" ]] && src="详情页接口「$_BS_LABEL」"
+  echo "登录通过（密码来源：$src）：应用认出主人 $_BS_EMAIL，且能进管理面板"
 }
