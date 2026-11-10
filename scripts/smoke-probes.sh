@@ -11,24 +11,38 @@ web_assert() { grep -qi 'bookstack'; }   # stdin：应用自己的登录页（�
 
 _bs_plugin_id() { printf '%s' "${SMOKE_PLUGIN_ID:-${PROBES_PLUGIN_ID:-${plugin_id:-}}}"; }
 
+# 带主人令牌调核心：<方法> <路径> [curl 参数…]。仓库的探针套件（scripts/probes.sh）有 smoke_api，e2e 冒烟直接
+# source 这份文件、没有它，按同一口径补一个。
+_bs_api() {
+  local method="$1" path="$2"
+  shift 2
+  if declare -F smoke_api >/dev/null; then
+    smoke_api "$method" "$path" "$@"
+  else
+    curl -sS --noproxy '*' --fail-with-body -X "$method" -H "Authorization: Bearer $SMOKE_TOKEN" "$@" "$SMOKE_BASE$path"
+  fi
+}
+
 _bs_marker_file() { # 标记文件：SMOKE_STATE 在 dev.sh probes 里是目录，目录里放标记文件
   if [[ -d "${SMOKE_STATE:-}" ]]; then printf '%s/data-marker' "$SMOKE_STATE"; else printf '%s' "${SMOKE_STATE:-}"; fi
 }
 
 # 管理员账密：走详情页用的接口读，顺便断言清单把它声明成了主人可见（GET …/secrets 的列表里有 admin_password），
-# 再取它的值登录。密码只注入给 init（应用本身不需要），接口读的是核心密钥库，和容器配置无关。
+# 再取它的值登录；登录邮箱取主人资料。密码只注入给 init（应用本身不需要），接口读的是核心密钥库，
+# 和容器配置无关。
 _bs_admin_credentials() {
-  local list
-  list="$(smoke_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets")" ||
+  local list me
+  list="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets")" ||
     { echo "读不到主人可见的密钥列表（GET …/secrets 失败）"; return 1; }
   _BS_LABEL="$(jq -r '.secrets[] | select(.name == "admin_password") | .label' <<<"$list")"
   [[ -n "$_BS_LABEL" ]] ||
     { echo "详情页接口的密钥列表里没有 admin_password（清单没写 show_owner？）：$list"; return 1; }
-  _BS_EMAIL="$SMOKE_OWNER_EMAIL"
-  _BS_PASSWORD="$(smoke_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
+  me="$(_bs_api GET /_wonton/api/me)" || { echo "读不到主人资料（GET /me 失败）"; return 1; }
+  _BS_EMAIL="$(jq -r '.email // empty' <<<"$me")"
+  _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
     { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
   [[ -n "$_BS_EMAIL" && -n "$_BS_PASSWORD" ]] ||
-    { echo "主人邮箱为空（WONTON_OWNER_EMAIL）或管理员密码为空"; return 1; }
+    { echo "主人资料里没有邮箱（App 里没填？）或管理员密码为空"; return 1; }
 }
 
 # 用管理员账密走应用自己的登录表单（POST /login）。jar 里已有有效会话时 /login 会跳走，
