@@ -1,33 +1,34 @@
 # shellcheck shell=bash
 # BookStack：sso=none（用 BookStack 自己的账号登录，不走云吞登录）。
 # 管理员由 init 一次性服务在首次启动时建好：主人的邮箱 + 核心生成的随机密码（secrets.admin_password），
-# 账密经 lan.client 显示在插件详情页。
-# 身份：identity_check 用管理员账密走应用登录表单，断言进入管理面板且当前用户就是主人的邮箱。
+# 密码经 show_owner 在插件详情页显示。
+# 身份：identity_check 从详情页用的密钥接口取密码，用户邮箱取主人资料；用它走应用登录表单，断言进入管理面板
+#       且当前用户就是主人的邮箱。取不到密码（清单没声明 show_owner、接口坏了）时这里就失败。
 # 数据：data_write 登录后建一本带随机标记的书；data_check 用同一份账密重新登录再搜这本书——
 #       密码变了或数据丢了都会在这里失败。
 
 web_assert() { grep -qi 'bookstack'; }   # stdin：应用自己的登录页（未登录时网关后的第一屏）
 
-# init 一次性容器的名字和它配置里的管理员账密。密码只注入给 init（应用本身不需要它），
-# 容器退出后 Docker 的容器配置仍在，docker inspect 读得到；不 exec、不碰宿主上的凭据。
-_bs_container() {
-  local id="${SMOKE_PLUGIN_ID:-${PROBES_PLUGIN_ID:-${plugin_id:-}}}"
-  printf 'wonton-%s--%s--init' "${SMOKE_INSTANCE:-}" "${id//./-}"
-}
+_bs_plugin_id() { printf '%s' "${SMOKE_PLUGIN_ID:-${PROBES_PLUGIN_ID:-${plugin_id:-}}}"; }
 
 _bs_marker_file() { # 标记文件：SMOKE_STATE 在 dev.sh probes 里是目录，目录里放标记文件
   if [[ -d "${SMOKE_STATE:-}" ]]; then printf '%s/data-marker' "$SMOKE_STATE"; else printf '%s' "${SMOKE_STATE:-}"; fi
 }
 
+# 管理员账密：走详情页用的接口读，顺便断言清单把它声明成了主人可见（GET …/secrets 的列表里有 admin_password），
+# 再取它的值登录。密码只注入给 init（应用本身不需要），接口读的是核心密钥库，和容器配置无关。
 _bs_admin_credentials() {
-  local container env
-  container="$(_bs_container)"
-  env="$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}')" ||
-    { echo "读不到一次性容器 $container 的配置（docker inspect 失败）"; return 1; }
-  _BS_EMAIL="$(grep -oE '^WONTON_OWNER_EMAIL=.*' <<<"$env" | head -1 | cut -d= -f2-)"
-  _BS_PASSWORD="$(grep -oE '^WONTON_SECRET_ADMIN_PASSWORD=.*' <<<"$env" | head -1 | cut -d= -f2-)"
+  local list
+  list="$(smoke_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets")" ||
+    { echo "读不到主人可见的密钥列表（GET …/secrets 失败）"; return 1; }
+  _BS_LABEL="$(jq -r '.secrets[] | select(.name == "admin_password") | .label' <<<"$list")"
+  [[ -n "$_BS_LABEL" ]] ||
+    { echo "详情页接口的密钥列表里没有 admin_password（清单没写 show_owner？）：$list"; return 1; }
+  _BS_EMAIL="$SMOKE_OWNER_EMAIL"
+  _BS_PASSWORD="$(smoke_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
+    { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
   [[ -n "$_BS_EMAIL" && -n "$_BS_PASSWORD" ]] ||
-    { echo "init 容器配置里没有管理员账密（WONTON_OWNER_EMAIL / WONTON_SECRET_ADMIN_PASSWORD）"; return 1; }
+    { echo "主人邮箱为空（WONTON_OWNER_EMAIL）或管理员密码为空"; return 1; }
 }
 
 # 用管理员账密走应用自己的登录表单（POST /login）。jar 里已有有效会话时 /login 会跳走，
@@ -109,7 +110,7 @@ _bs_state_line() {  # 成功时把状态行打到 stdout，失败时把原因打
   head -n 1 "$mf"
 }
 
-identity_check() { # 应用自己的登录链：管理员账密（init 容器配置里）登录后进管理面板，当前用户是主人邮箱
+identity_check() { # 应用自己的登录链：详情页接口取到的管理员密码登录后进管理面板，当前用户是主人邮箱
   SMOKE_WEB_URL="${SMOKE_WEB_URL%/}"  # 套件给的地址带尾斜杠，拼路径前剥掉，避免 // 打不进路由
   local page
   _bs_admin_credentials || return 1
@@ -118,5 +119,5 @@ identity_check() { # 应用自己的登录链：管理员账密（init 容器配
   grep -qF "$_BS_EMAIL" <<<"$page" || { echo "管理面板里没有主人邮箱 $_BS_EMAIL：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
   page="$(web_get /my-account/profile)" || { echo "/my-account/profile 打不开：$page"; return 1; }
   grep -qF "$_BS_EMAIL" <<<"$page" || { echo "当前用户不是主人（$_BS_EMAIL）：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
-  echo "登录链通过：应用认出主人 $_BS_EMAIL，且能进管理面板"
+  echo "详情页接口给出「$_BS_LABEL」，用它的值登录通过：应用认出主人 $_BS_EMAIL，且能进管理面板"
 }

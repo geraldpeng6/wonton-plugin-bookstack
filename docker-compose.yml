@@ -1,8 +1,8 @@
 # BookStack 家庭 Wiki：书、章节、页面，所见即所得编辑和全文搜索。
 # 登录用 BookStack 自己的账号（sso: none）：核心只签发 http 的 OIDC，BookStack 上游硬性要求 https
 # 签发方（核心网关在隧道里不用 TLS），接不上，原因写在 README。管理员不设任何默认账密：
-# init 一次性服务在首次启动时把它建成主人的邮箱 + 核心生成的随机密码，账密经 lan.client
-# 显示在插件详情页（lan_webui 开关后面）。
+# init 一次性服务在首次启动时把它建成主人的邮箱 + 核心生成的随机密码，密码用密钥的 show_owner
+# 显示在插件详情页（登录邮箱就是主人的云吞邮箱）。
 # 上游文档指向的镜像是 linuxserver.io 打包的（BookStack 项目自己不发镜像），MIT 应用 + GPL-2.0 的 MariaDB 数据库，
 # 都用上游官方镜像、按清单列表（index）的摘要固定。
 services:
@@ -98,9 +98,9 @@ volumes:
   db-data:
 
 x-wonton:
-  spec: "0.6"
+  spec: "0.8"
   id: app.bookstack.bookstack
-  version: 0.1.0
+  version: 0.1.1
   kind: app
   title: { en: BookStack }
   description:
@@ -124,24 +124,18 @@ x-wonton:
       Organise your knowledge into books: chapters hold pages, editing is rich-text with images and attachments, and everything stays searchable.
 
       Signs in with BookStack's own account, not the Wonton login.
-  release_notes: { zh: 第一版。, en: First release. }
+  release_notes:
+    zh: 管理员密码改在插件详情页显示，不再为显示账密申请局域网访问。
+    en: The admin password is shown on the plugin page instead of granting LAN access just to show it.
   webui:
     service: bookstack
     port: 80
     sso: none
-  # 管理员账密走 lan.client 显示在插件详情页（lan_webui 开关后面，开关打开前端口不开）。
-  # 管理员账号由 init 服务在首次启动时建好，邮箱是主人的邮箱，密码是核心生成的随机值。
-  lan:
-    ports:
-      - { service: bookstack, port: 80 }
-    client:
-      address: "http://{host}"
-      username: "{email}"
-      password: "{secret:admin_password}"
   secrets:
-    # 管理员密码：核心生成、详情页展示，init 服务写进应用；保留数据重装沿用同一个值（密码不变）。
+    # 管理员密码：核心生成，详情页显示（show_owner），init 服务写进应用；保留数据重装沿用同一个值（密码不变）。
     admin_password:
       generate: { bytes: 32 }
+      show_owner: { label: { zh: 管理员密码, en: Admin password } }
     # Laravel 会话加密密钥（APP_KEY），应用文档要求 base64 编码的 32 字节。
     app_key:
       generate: { bytes: 32, encoding: base64 }
@@ -149,10 +143,8 @@ x-wonton:
       generate: { bytes: 32 }
     db_root_password:
       generate: { bytes: 32 }
-  # network.lan：lan.client 和详情页展示账密要它；webui 端口列在 lan.ports 里，lan_webui 开关默认关。
   # owner.identity：管理员账号用主人的邮箱和用户名。
   permissions:
-    - network.lan
     - owner.identity
   # 上游没写最低内存；BookStack + MariaDB 空闲实测约 350M（docker stats，验证时 v26.09.2-ls295），取 512M。
   # 两个镜像都有 amd64 和 arm64（docker buildx imagetools inspect）。
