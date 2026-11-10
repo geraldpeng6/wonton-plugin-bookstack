@@ -69,6 +69,17 @@ _bs_admin_credentials() {
     { echo "主人资料里没有邮箱（App 里没填？）或管理员密码为空"; return 1; }
 }
 
+# 建立核心会话，写进 SMOKE_JAR。两套冒烟的 dweb 对 jar 的处理不一样（e2e 的不带 --jar，
+# 会话落在检出目录的 .wonton 里），这里自己做，不依赖 dweb。
+_bs_session() {
+  rm -f "$SMOKE_JAR"
+  curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$SMOKE_JAR" \
+    --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" ||
+    { echo "用户令牌登录不了核心"; return 1; }
+  curl -sS --noproxy '*' -o /dev/null -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Accept: text/html' \
+    "${SMOKE_WEB_URL%/}/" || { echo "走不通插件网页的登录跳转"; return 1; }
+}
+
 # 用管理员账密走应用自己的登录表单（POST /login）。jar 里已有有效会话时 /login 会跳走，
 # 那就直接用现成会话；登录被拒（账密不对）时报错——数据项靠这一步验证“密码没变、旧密码还能登录”。
 _bs_login() {
@@ -91,7 +102,7 @@ _bs_login() {
 data_write() {
   local marker page csrf loc slug book_page
   marker="BS-SMOKE-$(date +%s)-$RANDOM"
-  dweb --fresh / -L >/dev/null || { echo "重建网关会话失败"; return 1; }
+  _bs_session || return 1
   _bs_admin_credentials || return 1
   _bs_login || return 1
   page="$(web_get /)" || { echo "登录后拿不到应用首页"; return 1; }
@@ -122,7 +133,7 @@ data_check() {
   line="$(_bs_state_line)" || { echo "$line"; return 1; }
   marker="${line%%$'\t'*}"
   slug="${line##*$'\t'}"
-  dweb --fresh / -L >/dev/null || { echo "重建网关会话失败"; return 1; }
+  _bs_session || return 1
   _bs_admin_credentials || return 1
   _bs_login || return 1
   page="$(web_get "/search?term=$marker")" || {
