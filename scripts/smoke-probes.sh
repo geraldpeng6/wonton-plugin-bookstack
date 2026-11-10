@@ -24,8 +24,11 @@ _bs_api() {
   fi
 }
 
-_bs_container() { # init 一次性容器的名字
-  printf 'wonton-%s--%s--init' "${SMOKE_INSTANCE:-}" "$(sed 's/\./-/g' <<<"$(_bs_plugin_id)")"
+_bs_container() { # init 一次性容器的名字；升级起点那一轮 SMOKE_INSTANCE 还没导出，实例名从 SMOKE_BASE 的主机名取
+  local instance="${SMOKE_INSTANCE:-}"
+  [[ -n "$instance" ]] || instance="${SMOKE_BASE#*://}"
+  instance="${instance%%.*}"
+  printf 'wonton-%s--%s--init' "$instance" "$(sed 's/\./-/g' <<<"$(_bs_plugin_id)")"
 }
 
 _bs_marker_file() { # 标记文件：SMOKE_STATE 在 dev.sh probes 里是目录，目录里放标记文件
