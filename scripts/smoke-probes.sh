@@ -96,10 +96,19 @@ _bs_admin_credentials() {
   if [[ -n "$_BS_LABEL" ]]; then
     me="$(_bs_api GET /_wonton/api/me)" || { echo "读不到主人资料（GET /me 失败）"; return 1; }
     _BS_EMAIL="$(jq -r '.email // empty' <<<"$me")"
-    # 新核心的值接口直接返回裸 JSON 字符串（旧的是 {"value":…}），两种形状都兼容
-    _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" |
-      jq -r 'if type == "object" then .value else . end')" ||
+    _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
       { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
+    # 和 init 一次性容器里注入的值对一下：接口给的值若与写进应用的不同（序列化变形），以容器里的为准——
+    # 应用实际用的是容器注入的那份。两者一致时保持接口值。
+    local init_pw container
+    container="$(_bs_container 2>/dev/null)" || container=
+    if [[ -n "$container" ]] && init_pw="$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null |
+      grep -oE '^WONTON_SECRET_ADMIN_PASSWORD=.*' | cut -d= -f2-)"; then
+      if [[ "$_BS_PASSWORD" != "$init_pw" ]]; then
+        echo "接口值（${#_BS_PASSWORD} 字符）与 init 注入值（${#init_pw} 字符）不同，改用 init 注入值"
+        _BS_PASSWORD="$init_pw"
+      fi
+    fi
   else
     echo "密钥列表里没有 admin_password（旧版本没有 show_owner？），从 init 容器配置读"
     _bs_container_credentials || return 1
@@ -132,7 +141,8 @@ _bs_login() {
       --data-urlencode "_token=$token" --data-urlencode "email=$_BS_EMAIL" --data-urlencode "password=$_BS_PASSWORD" \
       "${SMOKE_WEB_URL%/}/login")" || { echo "POST /login 请求失败"; return 1; }
     if grep -q 'id="login-form"' <<<"$reply"; then
-      echo "登录被拒（账密不对或已改），看到了：$(head -c 200 <<<"$reply" | tr '\n' ' ')"
+      # shellcheck disable=SC2001  # 剥 HTML 标签用 sed 最直白
+      echo "登录被拒（账密不对或已改），正文：$(sed -e 's/<[^>]*>/ /g' <<<"$reply" | tr -s ' \n' ' ' | head -c 300)"
       return 1
     fi
   fi
