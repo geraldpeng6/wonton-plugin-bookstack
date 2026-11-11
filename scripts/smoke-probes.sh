@@ -147,6 +147,12 @@ _bs_login() {
     if grep -q 'id="login-form"' <<<"$reply"; then
       echo "登录被拒（账密不对或已改），正文：$(sed -e '/<style/,/<\/style>/d' -e '/<script/,/<\/script>/d' <<<"$reply" |
         sed -e 's/<[^>]*>/ /g' | tr -s ' \n' ' ' | grep -oE '(这些凭据|不匹配|受限|尝试次数|太多|无效|登录)[^。]{0,60}' | head -3)"
+      # 对照数据库里管理员的真实邮箱（登录用的邮箱来自主人资料，两边对不上就是这个）
+      local dbac
+      dbac="$(docker ps --format '{{.Names}}' | grep -E -- "-app-bookstack-bookstack$|bookstack-bookstack-1$" | head -1)"
+      [[ -n "$dbac" ]] && docker exec "$dbac" php artisan tinker --execute='
+        foreach (\BookStack\Users\Models\Role::getSystemRole("admin")->users as $u) { echo "db-email=[" . $u->email . "]"; }' 2>/dev/null |
+        { read -r dbe; echo "数据库管理员邮箱：$dbe（登录用：$_BS_EMAIL）"; }
       return 1
     fi
   fi
