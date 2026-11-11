@@ -23,6 +23,15 @@ services:
       DB_DATABASE: bookstack
       DB_USERNAME: bookstack
       DB_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
+      # 发信走核心的内部邮箱（notify 权限）：不认证、不加密、明文 25，收件人只能是家里人，信转进
+      # 收件人的 Wonton 私聊。MAIL_ENCRYPTION 在这版 BookStack 只控制「要求 STARTTLS」，按上游文档
+      # 写 null（明文）；这台服务器不宣告 STARTTLS，Symfony 传输层只在服务端宣告时才升级。用户名密码
+      # 不填：服务器接受匿名，填了会在明文连接上 AUTH。
+      MAIL_DRIVER: smtp
+      MAIL_HOST: ${WONTON_SMTP_HOST}
+      MAIL_PORT: ${WONTON_SMTP_PORT}
+      MAIL_ENCRYPTION: "null"
+      MAIL_FROM: ${WONTON_MAIL_FROM}
       # 界面默认中文，浏览器语言是英文的访客自己切。
       APP_LANG: zh_CN
       PUID: ${PUID}
@@ -58,8 +67,39 @@ services:
           --email="$$WONTON_OWNER_EMAIL" --name="$$WONTON_OWNER_NAME" --password="$$WONTON_SECRET_ADMIN_PASSWORD"
         rc=$$?
         [ "$$rc" = 0 ] || [ "$$rc" = 2 ] || exit "$$rc"
+        # 邮箱即登录名。上游没有改用户邮箱的命令，走应用自己的 tinker（模型层）
+        # 把管理员账号的邮箱对到当前云吞邮箱：0.11 之前装的实例里存的是当时填的旧邮箱，主人的用户名
+        # 变过也一样。对齐只是顺手的事，不拦安装：只有一个管理员直接对；多个管理员先按 OIDC 的
+        # external_auth_id（= 云吞用户名）认主人的账号，认不出就打一行日志跳过，主人可以在应用的
+        # 「设置 - 用户」里手动改。已经是这个值就不动（幂等）。tinker --execute 里失败不能用裸 throw
+        # （PsySH 吞掉异常、退出码是 0）：整段包进 try，catch 里 exit(1) 才能让安装失败；exit() 只能
+        # 写在 catch 里——在 try 里调 exit() 抛出的 BreakException 会被这个 catch 捕住。成功路径自然结束。
+        php artisan tinker --execute='
+          try {
+            $$admins = \BookStack\Users\Models\Role::getSystemRole("admin")->users;
+            $$email = getenv("WONTON_OWNER_EMAIL");
+            $$user = null;
+            if ($$admins->count() === 1) {
+              $$user = $$admins->first();
+            } else {
+              $$owner = (string) getenv("WONTON_OWNER_NAME");
+              $$byOidc = $$admins->filter(function ($$u) use ($$owner) { return (string) $$u->external_auth_id === $$owner; });
+              $$user = $$byOidc->count() === 1 ? $$byOidc->first() : null;
+            }
+            if ($$user === null) {
+              echo "本次没有对齐管理员邮箱：应用里有 " . $$admins->count() . " 个管理员，认不出哪个是你的账号；请在应用的「设置 - 用户」里手动把账号邮箱改成 " . $$email . "（安装不受影响）\n";
+            } elseif ($$user->email !== $$email) {
+              $$user->email = $$email;
+              $$user->save();
+              echo "管理员邮箱已对到 " . $$email . "\n";
+            }
+          } catch (\Throwable $$e) {
+            fwrite(STDERR, "对齐管理员邮箱失败：" . $$e->getMessage() . "\n");
+            exit(1);
+          }
+        '
     environment:
-      # 管理员登录用邮箱，必须先填好云吞邮箱才能装。
+      # 管理员登录用邮箱；内部邮箱由核心保证总有值，不用主人先填。
       WONTON_OWNER_EMAIL: ${WONTON_OWNER_EMAIL:?}
       WONTON_OWNER_NAME: ${WONTON_OWNER_NAME}
       WONTON_SECRET_ADMIN_PASSWORD: ${WONTON_SECRET_ADMIN_PASSWORD}
@@ -98,9 +138,9 @@ volumes:
   db-data:
 
 x-wonton:
-  spec: "0.8"
+  spec: "0.11"
   id: app.bookstack.bookstack
-  version: 0.1.1
+  version: 0.2.0
   kind: app
   title: { en: BookStack }
   description:
@@ -119,14 +159,14 @@ x-wonton:
     zh: |
       把家里的知识整理成书：一本书分章节，章节里一页页写，所见即所得编辑，图片和附件直接贴进页面，之后全文搜索。
 
-      用 BookStack 自己的账号登录，不走云吞登录。
+      用 BookStack 自己的账号登录，不走云吞登录。应用发的信（找回密码、新用户邀请、页面更新的关注通知）会出现在收件人的 Wonton 私聊里；外部邮箱收不到。
     en: |
       Organise your knowledge into books: chapters hold pages, editing is rich-text with images and attachments, and everything stays searchable.
 
-      Signs in with BookStack's own account, not the Wonton login.
+      Signs in with BookStack's own account, not the Wonton login. Mail the app sends (password resets, user invites, watch notifications) lands in the recipient's Wonton chat; external addresses can't receive it.
   release_notes:
-    zh: 管理员密码改在插件详情页显示，不再为显示账密申请局域网访问。
-    en: The admin password is shown on the plugin page instead of granting LAN access just to show it.
+    zh: 应用发的信（找回密码、新用户邀请、页面关注通知）改走云吞内部邮箱，进收件人的 Wonton 私聊；重装时把管理员账号的邮箱对到云吞邮箱。
+    en: Mail the app sends (password resets, user invites, watch notifications) now goes through the Wonton internal mailbox into the recipient's Wonton chat; reinstalling syncs the admin account's email to the Wonton address.
   webui:
     service: bookstack
     port: 80
@@ -143,9 +183,10 @@ x-wonton:
       generate: { bytes: 32 }
     db_root_password:
       generate: { bytes: 32 }
-  # owner.identity：管理员账号用主人的邮箱和用户名。
+  # owner.identity：管理员账号用主人的邮箱和用户名。notify：应用发信走核心的内部邮箱。
   permissions:
     - owner.identity
+    - notify
   # 上游没写最低内存；BookStack + MariaDB 空闲实测约 350M（docker stats，验证时 v26.09.2-ls295），取 512M。
   # 两个镜像都有 amd64 和 arm64（docker buildx imagetools inspect）。
   requirements:

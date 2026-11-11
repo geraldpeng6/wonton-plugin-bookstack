@@ -52,6 +52,42 @@ _bs_container_credentials() {
 # 管理员账密：走详情页用的接口读，顺便断言清单把它声明成了主人可见（GET …/secrets 的列表里有 admin_password），
 # 再取它的值登录；登录邮箱取主人资料。升级的起点是还没有 show_owner 的旧版本，接口给不出这一项，那时从 init
 # 容器的配置里读，并说明走的是旧路（升级后的身份、数据两项仍会走接口）。
+# 核心把信投进主人的私聊后马上从内部邮箱删掉（投完才删），等“信出现在 Mailpit”有竞态：
+# 直接断言投递的结果——以主人身份读主人的 Wonton 私聊（通知房间），找这个插件发的信。
+
+_mx_curl() { # <路径> [curl 参数…]：在核心容器的网络栈里调 Tuwunel 的 Matrix 客户端接口（宿主够不着）
+  local path="$1"; shift
+  docker run --rm --network "container:wonton-${SMOKE_INSTANCE:?}--core" curlimages/curl:8.23.0 \
+    -sS --noproxy '*' --max-time 30 --fail-with-body "$@" "http://tuwunel.wonton.internal:8008$path"
+}
+
+_mx_room_mail() { # <插件 id>：以主人身份读主人的 Wonton 私聊，输出这个插件发进来的信（结构化事件数组）
+  local core="wonton-${SMOKE_INSTANCE:?}--core" admin server room owner tok enc
+  admin="$(docker exec "$core" sh -c 'cat "$WONTON_DATA_DIR/core/matrix-admin-token"')" ||
+    { echo "拿不到核心的 Matrix 管理令牌"; return 1; }
+  server="$(docker exec "$core" sh -c 'cat "$WONTON_MATRIX_SERVER_NAME_FILE" 2>/dev/null || printf %s "${WONTON_MATRIX_SERVER_NAME:-}"')"
+  [[ -n "$server" ]] || { server="${SMOKE_BASE#*://}"; server="${server%%:*}"; }
+  room="$(docker exec "$core" sh -c 'cat "$WONTON_DATA_DIR/core/matrix-notice-room" 2>/dev/null')" ||
+    { echo "主人的通知房间还没建（还没投过信？）"; return 1; }
+  enc="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$room")"
+  owner="@${SMOKE_OWNER:-owner}:$server"
+  tok="$(_mx_curl "/_synapse/admin/v1/users/$owner/login" \
+    -H "Authorization: Bearer $admin" -H 'Content-Type: application/json' -d '{}' | jq -er '.access_token // empty')" ||
+    { echo "换不出主人的 Matrix 会话（impersonate 失败）"; return 1; }
+  _mx_curl "/_matrix/client/v3/rooms/$enc/messages?dir=b&limit=30" -H "Authorization: Bearer $tok" |
+    jq -c --arg id "$1" '[.chunk[] | select(.content["app.wonton.plugin_mail"].plugin_id == $id)]'
+}
+
+_mx_wait_mail() { # <插件 id> [轮数=30]：轮询主人的私聊，等这封信出现在房间里（每轮 2 秒）
+  local id="$1" n="${2:-30}" i chunk
+  for ((i = 0; i < n; i++)); do
+    chunk="$(_mx_room_mail "$id")" || { sleep 2; continue; }
+    [[ "$chunk" != "[]" ]] && { printf '%s' "$chunk"; return 0; }
+    sleep 2
+  done
+  return 1
+}
+
 _bs_admin_credentials() {
   local list me
   list="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets")" ||
@@ -62,6 +98,26 @@ _bs_admin_credentials() {
     _BS_EMAIL="$(jq -r '.email // empty' <<<"$me")"
     _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
       { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
+    # 和 init 一次性容器里注入的对一下：建号实际用的是容器注入的那份——0.11 后核心注入的内部邮箱是
+    # <用户名>@wonton.internal，而主人资料里的邮箱可能还是别的形态，登录要用建号时那份才对得上；
+    # 密码同理（接口偶尔给不出值时也落到容器注入值）。
+    local init_pw init_email container
+    container="$(_bs_container 2>/dev/null)" || container=
+    if [[ -n "$container" ]] && init_pw="$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null |
+      grep -oE '^WONTON_SECRET_ADMIN_PASSWORD=.*' | cut -d= -f2-)"; then
+      init_email="$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' |
+        grep -oE '^WONTON_OWNER_EMAIL=.*' | cut -d= -f2-)"
+      if [[ -n "$init_email" && "$_BS_EMAIL" != "$init_email" ]]; then
+        echo "登录邮箱改用 init 注入的账号邮箱（资料邮箱 $_BS_EMAIL ≠ 建号邮箱 $init_email）"
+        _BS_EMAIL="$init_email"
+      fi
+      if [[ "$_BS_PASSWORD" != "$init_pw" ]]; then
+        echo "接口值（${#_BS_PASSWORD} 字符）与 init 注入值（${#init_pw} 字符）不同，改用 init 注入值"
+        _BS_PASSWORD="$init_pw"
+      fi
+    else
+      echo "没找到 init 容器（$container），只用接口值"
+    fi
   else
     echo "密钥列表里没有 admin_password（旧版本没有 show_owner？），从 init 容器配置读"
     _bs_container_credentials || return 1
@@ -94,7 +150,14 @@ _bs_login() {
       --data-urlencode "_token=$token" --data-urlencode "email=$_BS_EMAIL" --data-urlencode "password=$_BS_PASSWORD" \
       "${SMOKE_WEB_URL%/}/login")" || { echo "POST /login 请求失败"; return 1; }
     if grep -q 'id="login-form"' <<<"$reply"; then
-      echo "登录被拒（账密不对或已改），看到了：$(head -c 200 <<<"$reply" | tr '\n' ' ')"
+      echo "登录被拒（账密不对或已改），正文：$(sed -e '/<style/,/<\/style>/d' -e '/<script/,/<\/script>/d' <<<"$reply" |
+        sed -e 's/<[^>]*>/ /g' | tr -s ' \n' ' ' | grep -oE '(这些凭据|不匹配|受限|尝试次数|太多|无效|登录)[^。]{0,60}' | head -3)"
+      # 对照数据库里管理员的真实邮箱（登录用的邮箱来自主人资料，两边对不上就是这个）
+      local dbac
+      dbac="$(docker ps --format '{{.Names}}' | grep -E -- "-app-bookstack-bookstack$|bookstack-bookstack-1$" | head -1)"
+      [[ -n "$dbac" ]] && docker exec "$dbac" php artisan tinker --execute='
+        foreach (\BookStack\Users\Models\Role::getSystemRole("admin")->users as $u) { echo "db-email=[" . $u->email . "]"; }' 2>/dev/null |
+        { read -r dbe; echo "数据库管理员邮箱：$dbe（登录用：$_BS_EMAIL）"; }
       return 1
     fi
   fi
@@ -172,4 +235,72 @@ identity_check() { # 应用自己的登录链：详情页接口取到的管理�
   local src="init 容器配置（旧版本）"
   [[ -n "$_BS_LABEL" ]] && src="详情页接口「$_BS_LABEL」"
   echo "登录通过（密码来源：$src）：应用认出主人 $_BS_EMAIL，且能进管理面板"
+}
+
+# ---------- 内部邮箱（notify）的端到端检查 ----------
+
+_mp_api() { # <路径>：调 Mailpit 的 HTTP API（basic core:<api-password>）。Mailpit 只挂在插件网络，
+  # 宿主够不着；照核心自己 smoke-mailbox 的做法，在核心容器的网络栈里起一次性 curl 访问它。
+  local core pw dd out
+  core="wonton-${SMOKE_INSTANCE:?}--core"
+  docker inspect "$core" >/dev/null 2>&1 || { echo "找不到核心容器 $core"; return 1; }
+  if declare -F read_env >/dev/null; then dd="$(read_env WONTON_DATA_DIR)"
+  elif declare -F probes_setting >/dev/null; then dd="$(probes_setting WONTON_DATA_DIR)"
+  else echo "读不到 WONTON_DATA_DIR（read_env / probes_setting 都没有）"; return 1; fi
+  pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
+  [[ -n "$pw" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
+  out="$(docker run --rm --network "container:$core" curlimages/curl:8.23.0 \
+    -s -u "core:$pw" "http://mailpit.wonton.internal:8025$1" 2>&1)"
+  if [[ "$out" == "{"* ]]; then printf '%s' "$out"; return 0; fi
+  echo "Mailpit 没给出 JSON：$(head -c 200 <<<"$out")"
+  return 1
+}
+
+_mp_wait() { # <jq 参数…> [轮数=20]：轮询 Mailpit 信箱直到过滤命中。参数原样交给 jq（--arg 键 值、过滤串）；
+  # 最后一个参数是纯数字时取作轮数。
+  local -a args=()
+  local n=20 a i out
+  while (($#)); do
+    a="$1"; shift
+    if (($# == 0)) && [[ "$a" =~ ^[0-9]+$ ]]; then n="$a"; else args+=("$a"); fi
+  done
+  ((${#args[@]})) || { echo "mp_wait 没给 jq 过滤"; return 1; }
+  for ((i = 0; i < n; i++)); do
+    out="$(_mp_api "/api/v1/messages?limit=100")" || { sleep 3; continue; }
+    jq -e "${args[@]}" <<<"$out" >/dev/null 2>&1 && return 0
+    sleep 3
+  done
+  return 1
+}
+
+extra_check() { # 内部邮箱端到端：发信环境变量注入、真实找回密码信进 Mailpit、核心投进主人私聊后删掉
+  local appc mail_host mail_port
+  appc="$(docker ps --format '{{.Names}}' | grep -E -- "-bookstack--bookstack$|bookstack-bookstack-1$" | head -1)"
+  [[ -n "$appc" ]] || { echo "找不到 bookstack 应用容器"; return 1; }
+  mail_host="$(docker exec "$appc" printenv MAIL_HOST)" || { echo "应用容器没有 MAIL_HOST"; return 1; }
+  mail_port="$(docker exec "$appc" printenv MAIL_PORT)" || { echo "应用容器没有 MAIL_PORT"; return 1; }
+  [[ "$mail_host" == "smtp.wonton.internal" && "$mail_port" == "25" ]] ||
+    { echo "发信环境变量不对：MAIL_HOST=$mail_host MAIL_PORT=$mail_port"; return 1; }
+  echo "发信环境变量已注入：$mail_host:$mail_port"
+
+  # 收件人是管理员账号建号时的邮箱（init 注入的内部邮箱）。找回密码是未登录流程：jar 里只有核心会话、
+  # 没有应用登录（带应用会话访问会被 guest 中间件弹去仪表盘），所以不做 _bs_login。
+  _bs_session || return 1
+  _bs_admin_credentials || return 1
+  local to
+  to="$_BS_EMAIL"
+  [[ -n "$to" ]] || { echo "主人资料里没有邮箱"; return 1; }
+
+  # 真实找回密码信：BookStack 的路由是 /password/email（GET 表单 + POST 发信），_token 是 CSRF
+  local page token
+  page="$(web_get /password/email)" || { echo "拿不到找回密码页：$(head -c 200 <<<"$page")"; return 1; }
+  token="$(grep -o 'name="_token" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
+  # shellcheck disable=SC2001  # 剥标签看页面内容，sed 最直白
+  [[ -n "$token" ]] || { echo "找回密码页没有 _token，看到了：$(sed -e 's/<[^>]*>/ /g' <<<"$page" | tr -s ' \n' ' ' | head -c 200)"; return 1; }
+  web_get /password/email -d "_token=$token" --data-urlencode "email=$to" -o /dev/null ||
+    { echo "POST /password/email 失败"; return 1; }
+  # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
+  _mx_wait_mail app.bookstack.bookstack ||
+    { echo "60 秒内没在主人的 Wonton 私聊看到 BookStack 的找回密码信（收件人 $to）"; return 1; }
+  echo "找回密码信已投进 $to 的 Wonton 私聊"
 }
