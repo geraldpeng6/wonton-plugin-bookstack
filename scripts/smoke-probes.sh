@@ -291,13 +291,13 @@ extra_check() { # 内部邮箱端到端：发信环境变量注入、真实找�
   to="$_BS_EMAIL"
   [[ -n "$to" ]] || { echo "主人资料里没有邮箱"; return 1; }
 
-  # 真实找回密码信：POST /forgot-password（页面的 _token 是 CSRF）
+  # 真实找回密码信：BookStack 的路由是 /password/email（GET 表单 + POST 发信），_token 是 CSRF
   local page token
-  page="$(web_get /forgot-password)" || { echo "拿不到找回密码页：$(head -c 200 <<<"$page")"; return 1; }
+  page="$(web_get /password/email)" || { echo "拿不到找回密码页：$(head -c 200 <<<"$page")"; return 1; }
   token="$(grep -o 'name="_token" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
   [[ -n "$token" ]] || { echo "找回密码页没有 _token"; return 1; }
-  web_get /forgot-password -d "_token=$token" --data-urlencode "email=$to" -o /dev/null ||
-    { echo "POST /forgot-password 失败"; return 1; }
+  web_get /password/email -d "_token=$token" --data-urlencode "email=$to" -o /dev/null ||
+    { echo "POST /password/email 失败"; return 1; }
   # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
   _mx_wait_mail app.bookstack.bookstack ||
     { echo "60 秒内没在主人的 Wonton 私聊看到 BookStack 的找回密码信（收件人 $to）"; return 1; }
