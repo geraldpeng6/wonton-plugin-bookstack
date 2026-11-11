@@ -142,10 +142,10 @@ x-wonton:
   id: app.bookstack.bookstack
   version: 0.2.0
   kind: app
-  title: { en: BookStack }
+  title: { zh: 家庭手册（BookStack）, en: Home Handbook (BookStack) }
   description:
-    zh: "家里的 Wiki 和文档库：书、章节、页面，图文编辑，全文搜索。用 BookStack 自己的账号登录，不走云吞登录。"
-    en: "Your home wiki and docs: books, chapters and pages with a rich editor and full-text search. Signs in with BookStack's own account, not the Wonton login."
+    zh: "把家里的知识写成一本本“书”：书分章、章分页，图文混排、随时搜索。适合写家电说明、操作教程这类按目录翻的手册；要用 BookStack 自己的账号登录。"
+    en: "Write your household know-how as books: books hold chapters, chapters hold pages, with pictures and search throughout. Good for manuals and how-tos you read by table of contents; it uses its own BookStack sign-in."
   icon: icon.png
   notices: [NOTICE]
   author: { name: geraldpeng6, url: https://github.com/geraldpeng6 }
