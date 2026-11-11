@@ -3,8 +3,8 @@
 [BookStack](https://www.bookstackapp.com)（MIT）是自托管的 Wiki：书、章节、页面，所见即所得编辑，全文搜索。
 这个插件把它装进云吞：网页经核心网关打开，数据都在自己家里。
 
-开发、检查和发布脚本见[插件开发指南](https://github.com/geraldpeng6/wonton-docs/blob/main/develop.md)，
-清单字段和权限规则见[插件规范](https://github.com/geraldpeng6/wonton-docs/blob/main/plugin-spec.md)。
+开发、检查和发布脚本见[插件开发指南](https://github.com/wontonapp/wonton-docs/blob/main/develop.md)，
+清单字段和权限规则见[插件规范](https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md)。
 
 ## 行为
 
