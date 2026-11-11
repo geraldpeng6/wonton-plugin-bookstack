@@ -204,7 +204,7 @@ _mp_wait() { # <jq 过滤> [轮数=20]：轮询 Mailpit 信箱直到过滤命中
 }
 
 extra_check() { # 内部邮箱端到端：发信环境变量注入、真实找回密码信进 Mailpit、核心投进主人私聊后删掉
-  local appc mail_host mail_port rc
+  local appc mail_host mail_port
   appc="$(docker ps --format '{{.Names}}' | grep -E -- "-bookstack--bookstack$|bookstack-bookstack-1$" | head -1)"
   [[ -n "$appc" ]] || { echo "找不到 bookstack 应用容器"; return 1; }
   mail_host="$(docker exec "$appc" printenv MAIL_HOST)" || { echo "应用容器没有 MAIL_HOST"; return 1; }
@@ -226,11 +226,13 @@ extra_check() { # 内部邮箱端到端：发信环境变量注入、真实找�
   page="$(web_get /forgot-password)" || { echo "拿不到找回密码页：$(head -c 200 <<<"$page")"; return 1; }
   token="$(grep -o 'name="_token" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
   [[ -n "$token" ]] || { echo "找回密码页没有 _token"; return 1; }
-  web_get /forgot-password -d "_token=$token" --data-urlencode "email=$to" -o /dev/null -w '%{http_code}' >/dev/null ||
+  web_get /forgot-password -d "_token=$token" --data-urlencode "email=$to" -o /dev/null ||
     { echo "POST /forgot-password 失败"; return 1; }
+  # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
   _mp_wait --arg to "$to" '.messages | any(.To[].Address == $to)' ||
     { echo "60 秒内没在内部邮箱看到收件人 $to 的找回密码信"; return 1; }
   echo "找回密码信已进内部邮箱（收件人 $to）"
+  # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
   _mp_wait --arg to "$to" '(.messages | map(select(.To[].Address == $to)) | length) == 0' ||
     { echo "信一直留在 Mailpit：核心没把它投进收件人的 Wonton 私聊（投完才会删）"; return 1; }
   echo "核心已把找回密码信投进 $to 的 Wonton 私聊"
