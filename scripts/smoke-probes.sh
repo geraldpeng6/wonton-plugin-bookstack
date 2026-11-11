@@ -146,7 +146,7 @@ _bs_login() {
       "${SMOKE_WEB_URL%/}/login")" || { echo "POST /login 请求失败"; return 1; }
     if grep -q 'id="login-form"' <<<"$reply"; then
       echo "登录被拒（账密不对或已改），正文：$(sed -e '/<style/,/<\/style>/d' -e '/<script/,/<\/script>/d' <<<"$reply" |
-        sed -e 's/<[^>]*>/ /g' | tr -s ' \n' ' ' | head -c 300)"
+        sed -e 's/<[^>]*>/ /g' | tr -s ' \n' ' ' | grep -oE '(这些凭据|不匹配|受限|尝试次数|太多|无效|登录)[^。]{0,60}' | head -3)"
       return 1
     fi
   fi
