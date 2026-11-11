@@ -98,17 +98,22 @@ _bs_admin_credentials() {
     _BS_EMAIL="$(jq -r '.email // empty' <<<"$me")"
     _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
       { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
-    # 和 init 一次性容器里注入的值对一下：接口给的值若与写进应用的不同（序列化变形），以容器里的为准——
-    # 应用实际用的是容器注入的那份。两者一致时保持接口值。
-    local init_pw container
+    # 和 init 一次性容器里注入的对一下：建号实际用的是容器注入的那份——0.11 后核心注入的内部邮箱是
+    # <用户名>@wonton.internal，而主人资料里的邮箱可能还是别的形态，登录要用建号时那份才对得上；
+    # 密码同理（接口偶尔给不出值时也落到容器注入值）。
+    local init_pw init_email container
     container="$(_bs_container 2>/dev/null)" || container=
     if [[ -n "$container" ]] && init_pw="$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null |
       grep -oE '^WONTON_SECRET_ADMIN_PASSWORD=.*' | cut -d= -f2-)"; then
+      init_email="$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' |
+        grep -oE '^WONTON_OWNER_EMAIL=.*' | cut -d= -f2-)"
+      if [[ -n "$init_email" && "$_BS_EMAIL" != "$init_email" ]]; then
+        echo "登录邮箱改用 init 注入的账号邮箱（资料邮箱 $_BS_EMAIL ≠ 建号邮箱 $init_email）"
+        _BS_EMAIL="$init_email"
+      fi
       if [[ "$_BS_PASSWORD" != "$init_pw" ]]; then
         echo "接口值（${#_BS_PASSWORD} 字符）与 init 注入值（${#init_pw} 字符）不同，改用 init 注入值"
         _BS_PASSWORD="$init_pw"
-      else
-        echo "接口值与 init 注入值一致（${#_BS_PASSWORD} 字符）"
       fi
     else
       echo "没找到 init 容器（$container），只用接口值"
