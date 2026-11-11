@@ -107,7 +107,11 @@ _bs_admin_credentials() {
       if [[ "$_BS_PASSWORD" != "$init_pw" ]]; then
         echo "接口值（${#_BS_PASSWORD} 字符）与 init 注入值（${#init_pw} 字符）不同，改用 init 注入值"
         _BS_PASSWORD="$init_pw"
+      else
+        echo "接口值与 init 注入值一致（${#_BS_PASSWORD} 字符）"
       fi
+    else
+      echo "没找到 init 容器（$container），只用接口值"
     fi
   else
     echo "密钥列表里没有 admin_password（旧版本没有 show_owner？），从 init 容器配置读"
@@ -141,8 +145,8 @@ _bs_login() {
       --data-urlencode "_token=$token" --data-urlencode "email=$_BS_EMAIL" --data-urlencode "password=$_BS_PASSWORD" \
       "${SMOKE_WEB_URL%/}/login")" || { echo "POST /login 请求失败"; return 1; }
     if grep -q 'id="login-form"' <<<"$reply"; then
-      # shellcheck disable=SC2001  # 剥 HTML 标签用 sed 最直白
-      echo "登录被拒（账密不对或已改），正文：$(sed -e 's/<[^>]*>/ /g' <<<"$reply" | tr -s ' \n' ' ' | head -c 300)"
+      echo "登录被拒（账密不对或已改），正文：$(sed -e '/<style/,/<\/style>/d' -e '/<script/,/<\/script>/d' <<<"$reply" |
+        sed -e 's/<[^>]*>/ /g' | tr -s ' \n' ' ' | head -c 300)"
       return 1
     fi
   fi
