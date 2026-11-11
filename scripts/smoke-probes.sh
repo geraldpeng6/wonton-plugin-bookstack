@@ -96,7 +96,9 @@ _bs_admin_credentials() {
   if [[ -n "$_BS_LABEL" ]]; then
     me="$(_bs_api GET /_wonton/api/me)" || { echo "读不到主人资料（GET /me 失败）"; return 1; }
     _BS_EMAIL="$(jq -r '.email // empty' <<<"$me")"
-    _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
+    # 新核心的值接口直接返回裸 JSON 字符串（旧的是 {"value":…}），两种形状都兼容
+    _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" |
+      jq -r 'if type == "object" then .value else . end')" ||
       { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
   else
     echo "密钥列表里没有 admin_password（旧版本没有 show_owner？），从 init 容器配置读"
