@@ -283,24 +283,21 @@ extra_check() { # 内部邮箱端到端：发信环境变量注入、真实找�
     { echo "发信环境变量不对：MAIL_HOST=$mail_host MAIL_PORT=$mail_port"; return 1; }
   echo "发信环境变量已注入：$mail_host:$mail_port"
 
-  # 收件人是管理员账号的邮箱（重装对齐后就是主人的内部邮箱）；先建立会话和账密
+  # 收件人是管理员账号建号时的邮箱（init 注入的内部邮箱）。找回密码是未登录流程：jar 里只有核心会话、
+  # 没有应用登录（带应用会话访问会被 guest 中间件弹去仪表盘），所以不做 _bs_login。
   _bs_session || return 1
   _bs_admin_credentials || return 1
-  _bs_login || return 1
   local to
   to="$_BS_EMAIL"
   [[ -n "$to" ]] || { echo "主人资料里没有邮箱"; return 1; }
 
-  # 真实找回密码信：BookStack 的路由是 /password/email（GET 表单 + POST 发信）。找回密码是未登录流程，
-  # 用独立的未登录 jar：探针刚登录过，带应用会话访问会被 guest 中间件弹去仪表盘，拿不到表单。
-  local page token rjar="$SMOKE_JAR.reset"
-  rm -f "$rjar"
-  page="$(curl -sS --noproxy '*' -c "$rjar" "${SMOKE_WEB_URL%/}/password/email")" ||
-    { echo "拿不到找回密码页：$(head -c 200 <<<"$page")"; return 1; }
+  # 真实找回密码信：BookStack 的路由是 /password/email（GET 表单 + POST 发信），_token 是 CSRF
+  local page token
+  page="$(web_get /password/email)" || { echo "拿不到找回密码页：$(head -c 200 <<<"$page")"; return 1; }
   token="$(grep -o 'name="_token" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
   # shellcheck disable=SC2001  # 剥标签看页面内容，sed 最直白
   [[ -n "$token" ]] || { echo "找回密码页没有 _token，看到了：$(sed -e 's/<[^>]*>/ /g' <<<"$page" | tr -s ' \n' ' ' | head -c 200)"; return 1; }
-  curl -sS --noproxy '*' -L -b "$rjar" -c "$rjar" -o /dev/null     -d "_token=$token" --data-urlencode "email=$to" "${SMOKE_WEB_URL%/}/password/email" ||
+  web_get /password/email -d "_token=$token" --data-urlencode "email=$to" -o /dev/null ||
     { echo "POST /password/email 失败"; return 1; }
   # shellcheck disable=SC2016  # jq 程序，不能让 bash 展开
   _mx_wait_mail app.bookstack.bookstack ||
