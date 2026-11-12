@@ -10,31 +10,8 @@
 
 web_assert() { grep -qi 'bookstack'; }   # stdin：应用自己的登录页（未登录时网关后的第一屏）
 
-_bs_plugin_id() { printf '%s' "${SMOKE_PLUGIN_ID:-${PROBES_PLUGIN_ID:-${plugin_id:-}}}"; }
-
-# 带主人令牌调核心：<方法> <路径> [curl 参数…]。仓库的探针套件（scripts/probes.sh）有 smoke_api，e2e 冒烟直接
-# source 这份文件、没有它，按同一口径补一个。
-_bs_api() {
-  local method="$1" path="$2"
-  shift 2
-  if declare -F smoke_api >/dev/null; then
-    smoke_api "$method" "$path" "$@"
-  else
-    curl -sS --noproxy '*' --fail-with-body -X "$method" -H "Authorization: Bearer $SMOKE_TOKEN" "$@" "$SMOKE_BASE$path"
-  fi
-}
-
-_bs_container() { # init 一次性容器的名字；升级起点那一轮 SMOKE_INSTANCE 还没导出，实例名从 SMOKE_BASE 的主机名取
-  local instance="${SMOKE_INSTANCE:-}"
-  [[ -n "$instance" ]] || instance="${SMOKE_BASE#*://}"
-  instance="${instance%%.*}"
-  local id
-  id="$(_bs_plugin_id)"
-  printf 'wonton-%s--%s--init' "$instance" "${id//./-}"
-}
-
-_bs_marker_file() { # 标记文件：SMOKE_STATE 在 dev.sh probes 里是目录，目录里放标记文件
-  if [[ -d "${SMOKE_STATE:-}" ]]; then printf '%s/data-marker' "$SMOKE_STATE"; else printf '%s' "${SMOKE_STATE:-}"; fi
+_bs_container() { # init 一次性容器的名字（一次性服务退出后 docker ps 看不到，按标签找不到；容器名按套件命名规则拼）
+  printf 'wonton-%s--%s--init' "$SMOKE_INSTANCE" "${SMOKE_PLUGIN_ID//./-}"
 }
 
 # 旧版本（还没有 show_owner 的升级起点）的账密：密码只注入给 init（应用本身不需要它），容器退出后 Docker 的容器
@@ -55,22 +32,34 @@ _bs_container_credentials() {
 # 核心把信投进主人的私聊后马上从内部邮箱删掉（投完才删），等“信出现在 Mailpit”有竞态：
 # 直接断言投递的结果——以主人身份读主人的 Wonton 私聊（通知房间），找这个插件发的信。
 
+# 按 <服务名> 找本实例里这个服务的容器：核心给插件容器打了 wonton.plugin / wonton.service / wonton.instance
+# 标签，按标签找，不自己拼容器名。
+_container() {
+  local name
+  name="$(docker ps --format '{{.Names}}' \
+    --filter "label=wonton.plugin=$SMOKE_PLUGIN_ID" \
+    --filter "label=wonton.service=$1" \
+    --filter "label=wonton.instance=$SMOKE_INSTANCE" | head -1)"
+  [[ -n "$name" ]] || { echo "找不到 $SMOKE_PLUGIN_ID 的 $1 服务容器（实例 $SMOKE_INSTANCE）" >&2; return 1; }
+  printf '%s\n' "$name"
+}
+
 _mx_curl() { # <路径> [curl 参数…]：在核心容器的网络栈里调 Tuwunel 的 Matrix 客户端接口（宿主够不着）
   local path="$1"; shift
-  docker run --rm --network "container:wonton-${SMOKE_INSTANCE:?}--core" curlimages/curl:8.23.0 \
+  docker run --rm --network "container:$SMOKE_CORE" curlimages/curl:8.23.0 \
     -sS --noproxy '*' --max-time 30 --fail-with-body "$@" "http://tuwunel.wonton.internal:8008$path"
 }
 
 _mx_room_mail() { # <插件 id>：以主人身份读主人的 Wonton 私聊，输出这个插件发进来的信（结构化事件数组）
-  local core="wonton-${SMOKE_INSTANCE:?}--core" admin server room owner tok enc
-  admin="$(docker exec "$core" sh -c 'cat "$WONTON_DATA_DIR/core/matrix-admin-token"')" ||
+  local admin server room owner tok enc
+  admin="$(docker exec "$SMOKE_CORE" sh -c 'cat "$WONTON_DATA_DIR/core/matrix-admin-token"')" ||
     { echo "拿不到核心的 Matrix 管理令牌"; return 1; }
-  server="$(docker exec "$core" sh -c 'cat "$WONTON_MATRIX_SERVER_NAME_FILE" 2>/dev/null || printf %s "${WONTON_MATRIX_SERVER_NAME:-}"')"
+  server="$(docker exec "$SMOKE_CORE" sh -c 'cat "$WONTON_MATRIX_SERVER_NAME_FILE" 2>/dev/null || printf %s "${WONTON_MATRIX_SERVER_NAME:-}"')"
   [[ -n "$server" ]] || { server="${SMOKE_BASE#*://}"; server="${server%%:*}"; }
-  room="$(docker exec "$core" sh -c 'cat "$WONTON_DATA_DIR/core/matrix-notice-room" 2>/dev/null')" ||
+  room="$(docker exec "$SMOKE_CORE" sh -c 'cat "$WONTON_DATA_DIR/core/matrix-notice-room" 2>/dev/null')" ||
     { echo "主人的通知房间还没建（还没投过信？）"; return 1; }
   enc="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$room")"
-  owner="@${SMOKE_OWNER:-owner}:$server"
+  owner="@$SMOKE_OWNER:$server"
   tok="$(_mx_curl "/_synapse/admin/v1/users/$owner/login" \
     -H "Authorization: Bearer $admin" -H 'Content-Type: application/json' -d '{}' | jq -er '.access_token // empty')" ||
     { echo "换不出主人的 Matrix 会话（impersonate 失败）"; return 1; }
@@ -90,13 +79,13 @@ _mx_wait_mail() { # <插件 id> [轮数=30]：轮询主人的私聊，等这封�
 
 _bs_admin_credentials() {
   local list me
-  list="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets")" ||
+  list="$(smoke_api GET "/_wonton/api/plugins/$SMOKE_PLUGIN_ID/secrets")" ||
     { echo "读不到主人可见的密钥列表（GET …/secrets 失败）"; return 1; }
   _BS_LABEL="$(jq -r '.secrets[] | select(.name == "admin_password") | .label' <<<"$list")"
   if [[ -n "$_BS_LABEL" ]]; then
-    me="$(_bs_api GET /_wonton/api/me)" || { echo "读不到主人资料（GET /me 失败）"; return 1; }
+    me="$(smoke_api GET /_wonton/api/me)" || { echo "读不到主人资料（GET /me 失败）"; return 1; }
     _BS_EMAIL="$(jq -r '.email // empty' <<<"$me")"
-    _BS_PASSWORD="$(_bs_api GET "/_wonton/api/plugins/$(_bs_plugin_id)/secrets/admin_password" | jq -r '.value')" ||
+    _BS_PASSWORD="$(smoke_api GET "/_wonton/api/plugins/$SMOKE_PLUGIN_ID/secrets/admin_password" | jq -r '.value')" ||
       { echo "取不到 admin_password 的值（GET …/secrets/admin_password 失败）"; return 1; }
     # 和 init 一次性容器里注入的对一下：建号实际用的是容器注入的那份——0.11 后核心注入的内部邮箱是
     # <用户名>@wonton.internal，而主人资料里的邮箱可能还是别的形态，登录要用建号时那份才对得上；
@@ -126,35 +115,29 @@ _bs_admin_credentials() {
     { echo "主人资料里没有邮箱（App 里没填？）或管理员密码为空"; return 1; }
 }
 
-# 建立核心会话，写进 SMOKE_JAR。两套冒烟的 dweb 对 jar 的处理不一样（e2e 的不带 --jar，
-# 会话落在检出目录的 .wonton 里），这里自己做，不依赖 dweb。
+# 建立核心会话（重建，写进 SMOKE_JAR）：重装、升级会换核心，旧会话失效。
 _bs_session() {
-  rm -f "$SMOKE_JAR"
-  curl -sS --noproxy '*' --fail-with-body -o /dev/null -c "$SMOKE_JAR" \
-    --data-urlencode "token=$SMOKE_TOKEN" "$SMOKE_BASE/_wonton/login" ||
-    { echo "用户令牌登录不了核心"; return 1; }
-  curl -sS --noproxy '*' -o /dev/null -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" -H 'Accept: text/html' \
-    "${SMOKE_WEB_URL%/}/" || { echo "走不通插件网页的登录跳转"; return 1; }
+  dweb --fresh / -L >/dev/null || { echo "建立核心会话失败"; return 1; }
 }
 
 # 用管理员账密走应用自己的登录表单（POST /login）。jar 里已有有效会话时 /login 会跳走，
 # 那就直接用现成会话；登录被拒（账密不对）时报错——数据项靠这一步验证“密码没变、旧密码还能登录”。
 _bs_login() {
   local page token reply
-  page="$(curl -sS --noproxy '*' -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" "${SMOKE_WEB_URL%/}/login")" ||
+  page="$(curl -sS --noproxy '*' -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" "$SMOKE_WEB_URL/login")" ||
     { echo "拿不到登录页"; return 1; }
   if grep -q 'id="login-form"' <<<"$page"; then
     token="$(grep -o 'name="_token" value="[^"]*"' <<<"$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
     [[ -n "$token" ]] || { echo "登录页没有表单 _token，看到了：$(head -c 200 <<<"$page" | tr '\n' ' ')"; return 1; }
     reply="$(curl -sS --noproxy '*' -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
       --data-urlencode "_token=$token" --data-urlencode "email=$_BS_EMAIL" --data-urlencode "password=$_BS_PASSWORD" \
-      "${SMOKE_WEB_URL%/}/login")" || { echo "POST /login 请求失败"; return 1; }
+      "$SMOKE_WEB_URL/login")" || { echo "POST /login 请求失败"; return 1; }
     if grep -q 'id="login-form"' <<<"$reply"; then
       echo "登录被拒（账密不对或已改），正文：$(sed -e '/<style/,/<\/style>/d' -e '/<script/,/<\/script>/d' <<<"$reply" |
         sed -e 's/<[^>]*>/ /g' | tr -s ' \n' ' ' | grep -oE '(这些凭据|不匹配|受限|尝试次数|太多|无效|登录)[^。]{0,60}' | head -3)"
       # 对照数据库里管理员的真实邮箱（登录用的邮箱来自主人资料，两边对不上就是这个）
       local dbac
-      dbac="$(docker ps --format '{{.Names}}' | grep -E -- "-app-bookstack-bookstack$|bookstack-bookstack-1$" | head -1)"
+      dbac="$(_container bookstack 2>/dev/null)" || dbac=
       [[ -n "$dbac" ]] && docker exec "$dbac" php artisan tinker --execute='
         foreach (\BookStack\Users\Models\Role::getSystemRole("admin")->users as $u) { echo "db-email=[" . $u->email . "]"; }' 2>/dev/null |
         { read -r dbe; echo "数据库管理员邮箱：$dbe（登录用：$_BS_EMAIL）"; }
@@ -188,7 +171,7 @@ data_write() {
     echo "建的书页面里没有标记（可能跳回了别的页面），看到了：$(head -c 200 <<<"$book_page" | tr '\n' ' ')"
     return 1
   }
-  printf '%s\t%s\n' "$marker" "$slug" >"$(_bs_marker_file)" || { echo "写不进状态文件 $(_bs_marker_file)"; return 1; }
+  printf '%s\t%s\n' "$marker" "$slug" >"$SMOKE_STATE" || { echo "写不进状态文件 $SMOKE_STATE"; return 1; }
   echo "已建书 $slug（标记 $marker）"
 }
 
@@ -215,16 +198,15 @@ data_check() {
 
 _bs_state_line() {  # 成功时把状态行打到 stdout，失败时把原因打到 stdout 并返回 1
   local mf
-  mf="$(_bs_marker_file)"
+  mf="$SMOKE_STATE"
   if [[ ! -s "$mf" ]]; then
-    echo "状态文件 $mf 不存在或为空：data_write 没跑过？（SMOKE_STATE=${SMOKE_STATE:-未设置}）"
+    echo "状态文件 $mf 不存在或为空：data_write 没跑过？（SMOKE_STATE=$SMOKE_STATE）"
     return 1
   fi
   head -n 1 "$mf"
 }
 
 identity_check() { # 应用自己的登录链：详情页接口取到的管理员密码登录后进管理面板，当前用户是主人邮箱
-  SMOKE_WEB_URL="${SMOKE_WEB_URL%/}"  # 套件给的地址带尾斜杠，拼路径前剥掉，避免 // 打不进路由
   local page
   _bs_admin_credentials || return 1
   _bs_login || return 1
@@ -241,15 +223,11 @@ identity_check() { # 应用自己的登录链：详情页接口取到的管理�
 
 _mp_api() { # <路径>：调 Mailpit 的 HTTP API（basic core:<api-password>）。Mailpit 只挂在插件网络，
   # 宿主够不着；照核心自己 smoke-mailbox 的做法，在核心容器的网络栈里起一次性 curl 访问它。
-  local core pw dd out
-  core="wonton-${SMOKE_INSTANCE:?}--core"
-  docker inspect "$core" >/dev/null 2>&1 || { echo "找不到核心容器 $core"; return 1; }
-  if declare -F read_env >/dev/null; then dd="$(read_env WONTON_DATA_DIR)"
-  elif declare -F probes_setting >/dev/null; then dd="$(probes_setting WONTON_DATA_DIR)"
-  else echo "读不到 WONTON_DATA_DIR（read_env / probes_setting 都没有）"; return 1; fi
-  pw="$(docker exec "$core" cat "$dd/core/mailpit/api-password" 2>/dev/null)"
+  local pw out
+  docker inspect "$SMOKE_CORE" >/dev/null 2>&1 || { echo "找不到核心容器 $SMOKE_CORE"; return 1; }
+  pw="$(docker exec "$SMOKE_CORE" cat "$SMOKE_DATA_DIR/core/mailpit/api-password" 2>/dev/null)"
   [[ -n "$pw" ]] || { echo "读不到 Mailpit API 密码（核心数据目录 core/mailpit/api-password）"; return 1; }
-  out="$(docker run --rm --network "container:$core" curlimages/curl:8.23.0 \
+  out="$(docker run --rm --network "container:$SMOKE_CORE" curlimages/curl:8.23.0 \
     -s -u "core:$pw" "http://mailpit.wonton.internal:8025$1" 2>&1)"
   if [[ "$out" == "{"* ]]; then printf '%s' "$out"; return 0; fi
   echo "Mailpit 没给出 JSON：$(head -c 200 <<<"$out")"
@@ -275,8 +253,7 @@ _mp_wait() { # <jq 参数…> [轮数=20]：轮询 Mailpit 信箱直到过滤命
 
 extra_check() { # 内部邮箱端到端：发信环境变量注入、真实找回密码信进 Mailpit、核心投进主人私聊后删掉
   local appc mail_host mail_port
-  appc="$(docker ps --format '{{.Names}}' | grep -E -- "-bookstack--bookstack$|bookstack-bookstack-1$" | head -1)"
-  [[ -n "$appc" ]] || { echo "找不到 bookstack 应用容器"; return 1; }
+  appc="$(_container bookstack)" || return 1
   mail_host="$(docker exec "$appc" printenv MAIL_HOST)" || { echo "应用容器没有 MAIL_HOST"; return 1; }
   mail_port="$(docker exec "$appc" printenv MAIL_PORT)" || { echo "应用容器没有 MAIL_PORT"; return 1; }
   [[ "$mail_host" == "smtp.wonton.internal" && "$mail_port" == "25" ]] ||
